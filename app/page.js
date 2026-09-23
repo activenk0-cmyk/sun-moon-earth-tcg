@@ -5,7 +5,7 @@ import { db } from "../lib/firebase";
 import {
   doc, setDoc, getDoc, updateDoc, onSnapshot,
 } from "firebase/firestore";
-import { SLOTS, FACTION_LABEL, getCard, cardsBySlot } from "../lib/cards";
+import { SLOTS, FACTION_LABEL, getCard, cardsBySlot, tokenInfo } from "../lib/cards";
 
 /* ============ 定数 ============ */
 const MAX_FIELD = 5;
@@ -71,19 +71,22 @@ function newPlayer(deck, selection) {
   };
 }
 
-function makeToken(name, stat, opts = {}) {
+// トークン情報（tokenInfo の戻り値）から場のユニットを作る
+function tokenUnit(info) {
+  const kws = [...info.keywords];
   return {
     uid: uid(),
     cardId: null,
     token: true,
-    copyOf: opts.copyOf || null,
-    name,
-    stat,
-    cost: 1,
-    canAttack: opts.canAttack || false,
+    tokenId: info.tokenId || null,
+    copyOf: info.copyOf || null,
+    name: info.name,
+    stat: info.stat,
+    cost: info.cost,
+    canAttack: kws.includes("speed") || kws.includes("rush"),
     attacked: false,
-    noFaceAttack: opts.noFaceAttack || false,
-    keywords: opts.keywords || [],
+    noFaceAttack: kws.includes("rush"),
+    keywords: kws,
     firstAttackUsed: false,
   };
 }
@@ -109,8 +112,11 @@ function instFromCard(cardId) {
 
 const hasKw = (u, k) => u.keywords && u.keywords.includes(k);
 const isInvincible = (u) => hasKw(u, "invincible");
-// 効果判定用ID（アルベールのコピートークンは元カードの能力を持つ）
+// 効果判定用ID（コピー・トークンは元カードの能力を持つ）
 const effectId = (u) => u.cardId || u.copyOf || null;
+// 手札・場・生贄置き場のカード情報（トークンも通常カードと同じ形で扱う）
+const handInfo = (h) => (h.cardId ? getCard(h.cardId) : tokenInfo(h));
+const unitInfo = (u) => (u.cardId ? getCard(u.cardId) : tokenInfo(u));
 const factionText = (f) =>
   f === "sun" ? "text-amber-400" : f === "moon" ? "text-indigo-300" : "text-emerald-300";
 
@@ -374,6 +380,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [mode, setMode] = useState(null); // 対象選択モード
   const [banner, setBanner] = useState(null);
+  const [zone, setZone] = useState(null); // 生贄置き場の表示（"me" / "opp"）
   const lastTurnKey = useRef(null);
 
   // ターン切り替わり時のバナー
@@ -553,26 +560,27 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
     const p = players[myId];
     const o = players[oppId];
     const inst = p.hand[handIdx];
-    const card = inst && getCard(inst.cardId);
+    const card = inst && handInfo(inst);
     if (!card) return;
     const baseCost = Math.max(0, card.cost + (inst.costMod || 0));
     const cost = baseCost + (haste ? HASTE_EXTRA : 0);
     if (p.cost < cost) return;
     if (card.type === "character" && p.field.length >= MAX_FIELD) return;
-    if (!usableNow(inst.cardId, p)) return;
+    if (!usableNow(card.id, p)) return;
 
     const logs = [];
     p.cost -= cost;
     p.hand = p.hand.filter((_, i) => i !== handIdx);
 
     if (card.type === "character") {
-      const u = instFromCard(inst.cardId);
+      const u = card.isToken ? tokenUnit(card) : instFromCard(inst.cardId);
       if (haste) u.canAttack = true;
       p.field = [...p.field, u];
-      logs.push(`${card.name} を召喚${haste ? "（即時）" : ""}`);
+      logs.push(`${card.name}${card.isToken ? "（トークン）" : ""} を召喚${haste ? "（即時）" : ""}`);
 
-      // 召喚時効果
-      switch (inst.cardId) {
+      // 召喚時効果（手札から出したコピー・トークンは元カードの召喚時効果を発動する）
+      const sid = inst.cardId || card.copyOf || null;
+      switch (sid) {
         case "sun_priest": {
           const t = o.field.filter((x) => !isInvincible(x));
           if (t.length) { setPendingTarget({ kind: "damage3", players, logs }); return; }
@@ -594,29 +602,27 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           break;
         }
         case "earth_albert": {
-          // 生贄置き場のコスト7以下のキャラのうち、最もコストが高いものをコピー
+          // 生贄置き場のコスト7以下のキャラ（トークン含む）のうち、最もコストが高いもののコピーを出す
+          // 生贄置き場のカードは減らないので、何度でもコピーできる
           const chars = p.sacrifice
-            .map((s) => getCard(s.cardId))
+            .map((s) => handInfo(s))
             .filter((c) => c && c.type === "character" && c.cost <= 7);
           if (chars.length && p.field.length < MAX_FIELD) {
             const maxC = Math.max(...chars.map((c) => c.cost));
             const cands = chars.filter((c) => c.cost === maxC);
             const pick = cands[Math.floor(Math.random() * cands.length)];
-            const kws = [...pick.keywords];
-            p.field = [...p.field, makeToken(pick.name, pick.stat, {
-              copyOf: pick.id,
-              keywords: kws,
-              canAttack: kws.includes("speed") || kws.includes("rush"),
-              noFaceAttack: kws.includes("rush"),
-            })];
-            logs.push(`${pick.name} のトークンを生成`);
+            const info = pick.isToken ? pick : tokenInfo({ copyOf: pick.id });
+            p.field = [...p.field, tokenUnit(info)];
+            logs.push(`生贄置き場の ${pick.name}（コスト${pick.cost}）をコピーして場に出した`);
+          } else if (!chars.length) {
+            logs.push("地球のアルベール: コピーできるキャラがいない");
           }
           break;
         }
         case "sun_hector": {
           const empty = MAX_FIELD - p.field.length;
           for (let i = 0; i < empty; i++) {
-            p.field = [...p.field, makeToken("ヘクターの兵士", 3, { noFaceAttack: true, canAttack: true })];
+            p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "hector_soldier" }))];
           }
           logs.push(`空き枠に兵士を${empty}体展開`);
           break;
@@ -650,12 +656,12 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         }
         case "earth_crest":
           p.pendingCost = (p.pendingCost || 0) + 1;
-          if (p.hand.some((h) => h.cardId)) { setPendingTarget({ kind: "reduce1", players, logs }); return; }
+          if (p.hand.length) { setPendingTarget({ kind: "reduce1", players, logs }); return; }
           break;
         case "sun_order":
           for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-            p.field = [...p.field, makeToken("太陽の兵士", 3)];
-          logs.push("スタッツ3を2体展開");
+            p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "sun_soldier" }))];
+          logs.push("太陽の兵士（スタッツ3）を展開");
           break;
         case "moon_order":
           drawCards(p, 2);
@@ -674,11 +680,11 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           break;
         case "earth_judgment":
           for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-            p.field = [...p.field, makeToken("大地の守人", 6)];
+            p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "earth_guardian" }))];
           p.field.forEach((x) => {
             if (!isInvincible(x) && !x.keywords.includes("defender")) x.keywords.push("defender");
           });
-          logs.push("スタッツ6を2体展開・全体ディフェンダー");
+          logs.push("大地の守人（スタッツ6）を展開・全体ディフェンダー");
           break;
         default:
           break;
@@ -723,19 +729,32 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         const t = o.field.find((x) => x.uid === targetUid);
         if (t) {
           o.field = o.field.filter((x) => x.uid !== targetUid);
-          const back = t.token
-            ? { uid: uid(), cardId: null, token: true, name: t.name, stat: t.stat, costMod: 0 }
-            : { uid: t.uid, cardId: t.cardId, costMod: 0 };
-          if (o.hand.length < MAX_HAND) o.hand = [...o.hand, back];
-          else o.grave = [...o.grave, back];
-          logs.push(`${t.name} を手札に戻した`);
+          if (o.hand.length >= MAX_HAND) {
+            // 手札が満杯：トークンは破壊、カードは墓地へ（どちらも破壊時効果なし）
+            if (t.token) {
+              logs.push(`${t.name}（トークン）は手札が満杯のため破壊された（破壊時効果なし）`);
+            } else {
+              o.grave = [...o.grave, { uid: t.uid, cardId: t.cardId, costMod: 0 }];
+              logs.push(`${t.name} は手札が満杯のため墓地へ`);
+            }
+          } else {
+            const back = t.token
+              ? {
+                  uid: uid(), cardId: null, token: true,
+                  tokenId: t.tokenId || null, copyOf: t.copyOf || null,
+                  name: t.name, costMod: 0,
+                }
+              : { uid: t.uid, cardId: t.cardId, costMod: 0 };
+            o.hand = [...o.hand, back];
+            logs.push(`${t.name}${t.token ? "（トークン）" : ""} を手札に戻した`);
+          }
         }
         drawCards(p, 1);
         break;
       }
       case "reduce1": {
         const idx = p.hand.findIndex((h) => h.uid === targetUid);
-        if (idx >= 0 && p.hand[idx].cardId) {
+        if (idx >= 0) {
           p.hand[idx].costMod = (p.hand[idx].costMod || 0) - 1;
           logs.push("手札1枚のコスト-1");
         }
@@ -867,21 +886,29 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
     });
   }
 
-  /* ---- 生贄 ---- */
+  /* ---- 生贄（トークンも可能） ---- */
   async function sacrificeCard(idx) {
     if (!isMyTurn || phase !== "sacrifice") return;
     if (me.sacrificedThisTurn || me.maxCost >= MAX_COST) return;
     const players = clone();
     const p = players[myId];
     const inst = p.hand[idx];
-    const card = inst && getCard(inst.cardId);
+    const card = inst && handInfo(inst);
     if (!card) return;
     p.hand = p.hand.filter((_, i) => i !== idx);
-    p.sacrifice = [...p.sacrifice, { uid: inst.uid, cardId: inst.cardId }];
+    const entry = card.isToken
+      ? {
+          uid: inst.uid, cardId: null, token: true,
+          tokenId: card.tokenId || null, copyOf: card.copyOf || null, name: card.name,
+        }
+      : { uid: inst.uid, cardId: inst.cardId };
+    p.sacrifice = [...p.sacrifice, entry];
     p.maxCost += 1;
     p.hp += card.cost;
     p.sacrificedThisTurn = true;
-    const logs = [`${card.name} を生贄に（コスト上限+1 / HP+${card.cost} / 1ドロー）`];
+    const logs = [
+      `${card.name}${card.isToken ? "（トークン）" : ""} を生贄に（コスト上限+1 / HP+${card.cost} / 1ドロー）`,
+    ];
     drawCards(p, 1);
     await commit(players, logs);
   }
@@ -962,6 +989,8 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
     );
   }
 
+  const zoneList = zone === "me" ? me.sacrifice : zone === "opp" ? opp.sacrifice : [];
+
   return (
     <main className="min-h-screen max-w-lg mx-auto pb-28 text-sm">
       {/* 相手情報 + ターン表示 */}
@@ -969,7 +998,12 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         <div className="p-3 bg-slate-800">
           <div className="flex justify-between items-center">
             <span className="text-xs text-slate-400">相手</span>
-            <span className="text-xs">手札 {opp.hand.length} / 山 {opp.deck.length} / 生贄 {opp.sacrifice.length}</span>
+            <span className="text-xs">
+              手札 {opp.hand.length} / 山 {opp.deck.length} /{" "}
+              <button onClick={() => setZone("opp")} className="underline text-sky-400">
+                生贄 {opp.sacrifice.length}
+              </button>
+            </span>
           </div>
           <div className="flex justify-between items-center mt-1">
             <span className="text-2xl font-bold text-red-400">HP {opp.hp}</span>
@@ -1065,7 +1099,10 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           <span className="text-sm">コスト {me.cost}/{me.maxCost}</span>
         </div>
         <div className="text-xs text-slate-400 mt-1">
-          山 {me.deck.length} / 生贄 {me.sacrifice.length}
+          山 {me.deck.length} /{" "}
+          <button onClick={() => setZone("me")} className="underline text-sky-400">
+            生贄 {me.sacrifice.length}
+          </button>
         </div>
       </div>
 
@@ -1074,8 +1111,9 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         <div className="text-[10px] text-slate-500 mb-1">手札 ({me.hand.length})</div>
         <div className="flex gap-1 overflow-x-auto pb-2">
           {me.hand.map((h, i) => {
-            const c = getCard(h.cardId);
+            const c = handInfo(h);
             if (!c) {
+              // 旧バージョンで戻されたトークン（情報なし）
               return (
                 <div key={h.uid} className="shrink-0 w-24 p-2 rounded-lg border-2 border-slate-800 bg-slate-900 opacity-50">
                   <div className="text-[9px] text-slate-400">トークン</div>
@@ -1105,7 +1143,9 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
                   }`}
                 >
                   <div className="flex justify-between items-start">
-                    <span className={`text-[9px] ${factionText(c.faction)}`}>{FACTION_LABEL[c.faction]}</span>
+                    <span className={`text-[9px] ${factionText(c.faction)}`}>
+                      {c.isToken ? "トークン" : FACTION_LABEL[c.faction]}
+                    </span>
                     <span className="text-[11px] font-bold bg-slate-700 rounded px-1">{cost}</span>
                   </div>
                   <div className="text-[10px] font-bold leading-tight mt-1">{c.name}</div>
@@ -1187,6 +1227,43 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         </div>
       )}
 
+      {/* 生贄置き場の一覧 */}
+      {zone && (
+        <div onClick={() => setZone(null)} className="fixed inset-0 bg-black/70 flex items-end justify-center z-50">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-800 rounded-t-2xl p-5 w-full max-w-lg border-t border-slate-600"
+          >
+            <div className="text-sm font-bold mb-3">
+              {zone === "me" ? "自分" : "相手"}の生贄置き場（{zoneList.length}枚）
+            </div>
+            <div className="max-h-72 overflow-y-auto">
+              {zoneList.length === 0 ? (
+                <div className="text-xs text-slate-400">まだありません</div>
+              ) : (
+                zoneList.map((s, i) => {
+                  const c = handInfo(s);
+                  return (
+                    <div key={i} className="flex justify-between py-2 border-b border-slate-700 text-sm">
+                      <span className={c ? factionText(c.faction) : ""}>
+                        {c ? c.name : s.name || "不明"}
+                        {c?.isToken && <span className="text-slate-400 text-xs">（トークン）</span>}
+                      </span>
+                      <span className="text-slate-400 text-xs">
+                        {c ? `${c.type === "magic" ? "マジック" : "キャラ"} / コスト${c.cost}` : ""}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            <button onClick={() => setZone(null)} className="w-full mt-3 py-2 rounded-lg bg-slate-700 text-sm">
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 詳細/アクションモーダル */}
       {detail && (
         <ActionModal
@@ -1234,10 +1311,9 @@ function UnitCard({ u, foe, selected, targetable, ready, onTap }) {
 
 /* ============ アクションモーダル ============ */
 function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }) {
-  const c = detail.card || (detail.unit && detail.unit.cardId ? getCard(detail.unit.cardId) : null);
   const u = detail.unit;
+  const c = detail.card || (u ? unitInfo(u) : null);
   const isHand = detail.handIdx !== undefined;
-  const copySrc = u && u.copyOf ? getCard(u.copyOf) : null;
 
   return (
     <div onClick={onClose} className="fixed inset-0 bg-black/70 flex items-end justify-center z-50">
@@ -1248,7 +1324,8 @@ function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }
         {c ? (
           <>
             <div className={`text-xs mb-1 ${factionText(c.faction)}`}>
-              {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
+              {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} /{" "}
+              {c.isToken ? "トークン" : c.type === "magic" ? "マジック" : "キャラクター"}
             </div>
             <div className="text-lg font-bold mb-1">{c.name}</div>
             {c.stat && (
@@ -1263,17 +1340,7 @@ function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }
           <>
             <div className="text-xs mb-1 text-slate-400">トークン</div>
             <div className="text-lg font-bold mb-1">{u?.name}</div>
-            <div className="text-sm text-slate-300 mb-2">スタッツ {u?.stat}</div>
-            {copySrc && (
-              <p className="text-sm leading-relaxed text-slate-200 mb-2">
-                {copySrc.text}
-                <span className="text-slate-400">（トークンのため召喚時効果は発動しない）</span>
-              </p>
-            )}
-            {u?.noFaceAttack && (
-              <p className="text-xs text-slate-400 mb-2">出たターンは相手プレイヤーを攻撃できません。</p>
-            )}
-            <div className="mb-2" />
+            <div className="text-sm text-slate-300 mb-4">スタッツ {u?.stat}</div>
           </>
         )}
 
