@@ -594,12 +594,13 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           break;
         }
         case "earth_albert": {
+          // 生贄置き場のコスト7以下のキャラのうち、最もコストが高いものをコピー
           const chars = p.sacrifice
             .map((s) => getCard(s.cardId))
-            .filter((c) => c && c.type === "character");
+            .filter((c) => c && c.type === "character" && c.cost <= 7);
           if (chars.length && p.field.length < MAX_FIELD) {
-            const minC = Math.min(...chars.map((c) => c.cost));
-            const cands = chars.filter((c) => c.cost === minC);
+            const maxC = Math.max(...chars.map((c) => c.cost));
+            const cands = chars.filter((c) => c.cost === maxC);
             const pick = cands[Math.floor(Math.random() * cands.length)];
             const kws = [...pick.keywords];
             p.field = [...p.field, makeToken(pick.name, pick.stat, {
@@ -653,8 +654,8 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           break;
         case "sun_order":
           for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-            p.field = [...p.field, makeToken("太陽の兵士", 2)];
-          logs.push("スタッツ2を2体展開");
+            p.field = [...p.field, makeToken("太陽の兵士", 3)];
+          logs.push("スタッツ3を2体展開");
           break;
         case "moon_order":
           drawCards(p, 2);
