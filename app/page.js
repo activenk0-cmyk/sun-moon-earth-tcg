@@ -5,7 +5,7 @@ import { db } from "../lib/firebase";
 import {
   doc, setDoc, getDoc, updateDoc, onSnapshot,
 } from "firebase/firestore";
-import { CARDS, SLOTS, FACTION_LABEL, getCard, cardsBySlot } from "../lib/cards";
+import { SLOTS, FACTION_LABEL, getCard, cardsBySlot } from "../lib/cards";
 
 /* ============ 定数 ============ */
 const MAX_FIELD = 5;
@@ -14,6 +14,22 @@ const INITIAL_HP = 10;
 const INITIAL_COST = 1;
 const MAX_COST = 10;
 const HASTE_EXTRA = 4;
+
+const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
+
+// 相手キャラを対象に取るモード
+const OPP_TARGET_MODES = ["damage3", "destroy", "destroyDraw", "crest", "bounce", "goblin"];
+
+const MODE_MSG = {
+  damage3: "3ダメージを与える相手キャラを選んでください",
+  destroy: "破壊する相手キャラを選んでください",
+  destroyDraw: "破壊する相手キャラを選んでください",
+  crest: "4ダメージを与える相手キャラを選んでください",
+  bounce: "手札に戻す相手キャラ（コスト5以下）を選んでください",
+  goblin: "スタッツ-1する相手キャラを選んでください",
+  reduce1: "コストを-1する手札を選んでください",
+  reattack: "再攻撃させる攻撃済みの自軍キャラを選んでください",
+};
 
 /* ============ ユーティリティ ============ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -39,15 +55,32 @@ function buildDeck(selection) {
   return shuffle(deck);
 }
 
+function newPlayer(deck, selection) {
+  return {
+    hp: INITIAL_HP,
+    maxCost: INITIAL_COST,
+    cost: INITIAL_COST,
+    deck,
+    hand: [],
+    field: [],
+    grave: [],
+    sacrifice: [],
+    sacrificedThisTurn: false,
+    pendingCost: 0,
+    selection,
+  };
+}
+
 function makeToken(name, stat, opts = {}) {
   return {
     uid: uid(),
     cardId: null,
     token: true,
+    copyOf: opts.copyOf || null,
     name,
     stat,
     cost: 1,
-    canAttack: false,
+    canAttack: opts.canAttack || false,
     attacked: false,
     noFaceAttack: opts.noFaceAttack || false,
     keywords: opts.keywords || [],
@@ -57,23 +90,29 @@ function makeToken(name, stat, opts = {}) {
 
 function instFromCard(cardId) {
   const c = getCard(cardId);
+  const kws = [...c.keywords];
   return {
     uid: uid(),
     cardId,
     token: false,
+    copyOf: null,
     name: c.name,
     stat: c.stat,
     cost: c.cost,
-    canAttack: c.keywords.includes("speed"),
+    canAttack: kws.includes("speed") || kws.includes("rush"),
     attacked: false,
-    noFaceAttack: cardId === "earth_abyss",
-    keywords: [...c.keywords],
+    noFaceAttack: kws.includes("rush"),
+    keywords: kws,
     firstAttackUsed: false,
   };
 }
 
 const hasKw = (u, k) => u.keywords && u.keywords.includes(k);
 const isInvincible = (u) => hasKw(u, "invincible");
+// 効果判定用ID（アルベールのコピートークンは元カードの能力を持つ）
+const effectId = (u) => u.cardId || u.copyOf || null;
+const factionText = (f) =>
+  f === "sun" ? "text-amber-400" : f === "moon" ? "text-indigo-300" : "text-emerald-300";
 
 /* ============ メイン ============ */
 export default function Home() {
@@ -100,24 +139,13 @@ export default function Home() {
       guest: null,
       phase: "waiting",
       turn: myId,
+      turnPhase: "main", // 先攻1ターン目はドローなし
       turnCount: 1,
       skipNext: null,
       winner: null,
       log: ["ルームを作成しました"],
       players: {
-        [myId]: {
-          hp: INITIAL_HP,
-          maxCost: INITIAL_COST,
-          cost: INITIAL_COST,
-          deck,
-          hand: [],
-          field: [],
-          grave: [],
-          sacrifice: [],
-          sacrificedThisTurn: false,
-          pendingCost: 0,
-          selection,
-        },
+        [myId]: newPlayer(deck, selection),
       },
     };
     await setDoc(doc(db, "rooms", id), init);
@@ -137,11 +165,7 @@ export default function Home() {
     const deck = buildDeck(selection);
     const hostId = d.host;
     const hp = { ...d.players };
-    hp[myId] = {
-      hp: INITIAL_HP, maxCost: INITIAL_COST, cost: INITIAL_COST,
-      deck, hand: [], field: [], grave: [], sacrifice: [],
-      sacrificedThisTurn: false, pendingCost: 0, selection,
-    };
+    hp[myId] = newPlayer(deck, selection);
     // 初期手札5枚ずつ
     for (const pid of [hostId, myId]) {
       const p = hp[pid];
@@ -149,7 +173,7 @@ export default function Home() {
       p.deck = p.deck.slice(5);
     }
     await updateDoc(ref, {
-      guest: myId, players: hp, phase: "play",
+      guest: myId, players: hp, phase: "play", turnPhase: "main",
       log: [...d.log, "対戦開始！ 先攻は初ターンドローなし"],
     });
     setRoom(id);
@@ -192,7 +216,7 @@ export default function Home() {
       <main className="min-h-screen p-4 max-w-lg mx-auto pb-32">
         <h2 className="text-xl font-bold mb-1">デッキ構築</h2>
         <p className="text-xs text-slate-400 mb-4">
-          各枠から1種類ずつ選択（カード名をタップで詳細）
+          各枠から1種類ずつ選択（「詳細」で効果を確認）
         </p>
 
         {SLOTS.map((slot) => (
@@ -208,15 +232,11 @@ export default function Home() {
                   <button
                     key={c.id}
                     onClick={() => setSelection({ ...selection, [slot]: c.id })}
-                    onDoubleClick={() => setDetail(c)}
                     className={`p-2 rounded-lg text-left border-2 transition ${
                       on ? "border-white bg-slate-700" : "border-slate-700 bg-slate-800"
                     }`}
                   >
-                    <div className={`text-[10px] mb-1 ${
-                      c.faction === "sun" ? "text-amber-400"
-                      : c.faction === "moon" ? "text-indigo-300" : "text-emerald-300"
-                    }`}>
+                    <div className={`text-[10px] mb-1 ${factionText(c.faction)}`}>
                       {FACTION_LABEL[c.faction]}
                     </div>
                     <div className="text-[11px] font-bold leading-tight">{c.name}</div>
@@ -302,9 +322,9 @@ export default function Home() {
   );
 }
 
-/* ============ カード詳細モーダル ============ */
-function DetailModal({ card, unit, onClose }) {
-  const c = card || (unit && unit.cardId ? getCard(unit.cardId) : null);
+/* ============ カード詳細モーダル（デッキ構築用） ============ */
+function DetailModal({ card, onClose }) {
+  const c = card;
   return (
     <div
       onClick={onClose}
@@ -314,36 +334,12 @@ function DetailModal({ card, unit, onClose }) {
         onClick={(e) => e.stopPropagation()}
         className="bg-slate-800 rounded-2xl p-5 max-w-sm w-full border border-slate-600"
       >
-        {c ? (
-          <>
-            <div className={`text-xs mb-1 ${
-              c.faction === "sun" ? "text-amber-400"
-              : c.faction === "moon" ? "text-indigo-300" : "text-emerald-300"
-            }`}>
-              {FACTION_LABEL[c.faction]} / コスト {c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
-            </div>
-            <div className="text-lg font-bold mb-1">{c.name}</div>
-            {c.stat && (
-              <div className="text-sm text-slate-300 mb-2">
-                スタッツ {unit ? unit.stat : c.stat}
-                {unit && unit.stat !== c.stat && (
-                  <span className="text-slate-500"> (元 {c.stat})</span>
-                )}
-              </div>
-            )}
-            <p className="text-sm leading-relaxed text-slate-200">{c.text}</p>
-          </>
-        ) : (
-          <>
-            <div className="text-xs mb-1 text-slate-400">トークン</div>
-            <div className="text-lg font-bold mb-1">{unit.name}</div>
-            <div className="text-sm text-slate-300 mb-2">スタッツ {unit.stat}</div>
-            <p className="text-sm text-slate-200">
-              カード効果によって生成されたキャラクターです。
-              {unit.noFaceAttack && "出たターンは相手プレイヤーを攻撃できません。"}
-            </p>
-          </>
-        )}
+        <div className={`text-xs mb-1 ${factionText(c.faction)}`}>
+          {FACTION_LABEL[c.faction]} / コスト {c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
+        </div>
+        <div className="text-lg font-bold mb-1">{c.name}</div>
+        {c.stat && <div className="text-sm text-slate-300 mb-2">スタッツ {c.stat}</div>}
+        <p className="text-sm leading-relaxed text-slate-200">{c.text}</p>
         <button onClick={onClose} className="w-full mt-4 py-2 rounded-lg bg-slate-700 text-sm">
           閉じる
         </button>
@@ -352,10 +348,50 @@ function DetailModal({ card, unit, onClose }) {
   );
 }
 
+/* ============ フェーズ表示 ============ */
+function PhaseBar({ phase, mine }) {
+  const steps = ["draw", "main", "sacrifice"];
+  return (
+    <div className="flex gap-1 mb-2">
+      {steps.map((s, i) => (
+        <div
+          key={s}
+          className={`flex-1 text-center text-[11px] py-1 rounded ${
+            phase === s
+              ? mine ? "bg-amber-500 text-slate-900 font-bold" : "bg-slate-600 text-white font-bold"
+              : "bg-slate-800 text-slate-500"
+          }`}
+        >
+          {i + 1}. {PHASE_LABEL[s]}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ============ ゲーム画面 ============ */
 function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPending }) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
-  const [mode, setMode] = useState(null); // targeting mode
+  const [mode, setMode] = useState(null); // 対象選択モード
+  const [banner, setBanner] = useState(null);
+  const lastTurnKey = useRef(null);
+
+  // ターン切り替わり時のバナー
+  useEffect(() => {
+    if (!state || state.phase !== "play") return;
+    const key = `${state.turnCount}-${state.turn}`;
+    if (lastTurnKey.current === key) return;
+    lastTurnKey.current = key;
+    setSel(null);
+    const mine = state.turn === myId;
+    setBanner({ key, mine, text: mine ? "あなたのターンです" : "相手のターンです" });
+  }, [state?.turnCount, state?.turn, state?.phase, myId]);
+
+  useEffect(() => {
+    if (!banner) return;
+    const t = setTimeout(() => setBanner(null), 1600);
+    return () => clearTimeout(t);
+  }, [banner]);
 
   if (!state) return <div className="p-8">読み込み中...</div>;
 
@@ -373,16 +409,18 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
   const me = state.players[myId];
   const opp = state.players[oppId];
   const isMyTurn = state.turn === myId;
+  const phase = state.turnPhase || "main";
+  const canMain = isMyTurn && phase === "main" && !mode;
 
   if (!me || !opp) return <div className="p-8">読み込み中...</div>;
 
-  const log = (t) => [...(state.log || []), t].slice(-20);
-
-  /* ---- 勝敗判定 ---- */
-  function checkWin(players, attackerId) {
+  /* ---- 勝敗判定（呼ぶのは常に自分のターン中＝自分がターンプレイヤー） ---- */
+  function judge(players) {
     const a = players[myId], b = players[oppId];
+    if (a.dead) return oppId;
+    if (b.dead) return myId;
     const aDead = a.hp <= 0, bDead = b.hp <= 0;
-    if (aDead && bDead) return attackerId;
+    if (aDead && bDead) return myId; // 相打ちはターンプレイヤーの勝ち
     if (bDead) return myId;
     if (aDead) return oppId;
     return null;
@@ -425,7 +463,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
     if (!u.token) owner.grave = [...owner.grave, { uid: u.uid, cardId: u.cardId }];
     logs.push(`${u.name} が破壊された`);
 
-    switch (u.cardId) {
+    switch (effectId(u)) {
       case "moon_maiden":
         drawCards(owner, 1);
         logs.push("月の少女: 1ドロー");
@@ -441,7 +479,6 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       case "earth_frog":
         if (foe.maxCost > 0) {
           foe.maxCost -= 1;
-          foe.cost = Math.max(0, foe.cost - 1);
           logs.push("地球のカエル: 相手の最大コスト-1");
         }
         break;
@@ -481,18 +518,48 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
 
   const clone = () => JSON.parse(JSON.stringify(state.players));
 
+  /* ---- 状態の保存（勝敗判定込み） ---- */
+  async function commit(players, logs, extra = {}) {
+    const skip = players.__skip;
+    delete players.__skip;
+    const entries = logs.filter(Boolean).map((t) => ({ by: myId, t }));
+    const base = [...(state.log || []), ...entries];
+    const w = judge(players);
+    if (w) {
+      await push({
+        players, winner: w, phase: "end",
+        log: [...base, { by: myId, t: "決着！" }].slice(-30),
+      });
+      return;
+    }
+    await push({
+      players,
+      ...(skip ? { skipNext: skip } : {}),
+      ...extra,
+      log: base.slice(-30),
+    });
+  }
+
+  /* ---- 使用条件 ---- */
+  function usableNow(cardId, p) {
+    if (cardId === "earth_order") return p.field.some((x) => x.attacked && !isInvincible(x));
+    return true;
+  }
+
   /* ---- カードプレイ ---- */
   async function playCard(handIdx, haste) {
-    if (!isMyTurn) return;
+    if (!canMain) return;
     const players = clone();
     const p = players[myId];
     const o = players[oppId];
     const inst = p.hand[handIdx];
-    const card = getCard(inst.cardId);
+    const card = inst && getCard(inst.cardId);
+    if (!card) return;
     const baseCost = Math.max(0, card.cost + (inst.costMod || 0));
     const cost = baseCost + (haste ? HASTE_EXTRA : 0);
     if (p.cost < cost) return;
     if (card.type === "character" && p.field.length >= MAX_FIELD) return;
+    if (!usableNow(inst.cardId, p)) return;
 
     const logs = [];
     p.cost -= cost;
@@ -502,16 +569,13 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       const u = instFromCard(inst.cardId);
       if (haste) u.canAttack = true;
       p.field = [...p.field, u];
-      logs.push(`${card.name} を召喚`);
+      logs.push(`${card.name} を召喚${haste ? "（即時）" : ""}`);
 
       // 召喚時効果
       switch (inst.cardId) {
         case "sun_priest": {
           const t = o.field.filter((x) => !isInvincible(x));
-          if (t.length) {
-            setPendingTarget({ kind: "damage3", players, logs, from: u.uid });
-            return;
-          }
+          if (t.length) { setPendingTarget({ kind: "damage3", players, logs }); return; }
           break;
         }
         case "earth_priest":
@@ -519,48 +583,46 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           logs.push("コスト1有効化");
           break;
         case "sun_albert":
-          p.field.forEach((x) => { if (x.uid !== u.uid) x.stat += 3; });
+          p.field.forEach((x) => { if (x.uid !== u.uid && !isInvincible(x)) x.stat += 3; });
           logs.push("自軍全体 +3");
           break;
         case "moon_albert": {
           const t = o.field.filter((x) => !isInvincible(x));
-          if (t.length) {
-            setPendingTarget({ kind: "destroyDraw", players, logs, from: u.uid });
-            return;
-          }
+          if (t.length) { setPendingTarget({ kind: "destroyDraw", players, logs }); return; }
           drawCards(p, 1);
+          logs.push("1ドロー");
           break;
         }
         case "earth_albert": {
           const chars = p.sacrifice
             .map((s) => getCard(s.cardId))
             .filter((c) => c && c.type === "character");
-          if (chars.length) {
+          if (chars.length && p.field.length < MAX_FIELD) {
             const minC = Math.min(...chars.map((c) => c.cost));
             const cands = chars.filter((c) => c.cost === minC);
             const pick = cands[Math.floor(Math.random() * cands.length)];
-            if (p.field.length < MAX_FIELD) {
-              p.field = [...p.field, makeToken(pick.name, pick.stat)];
-              logs.push(`${pick.name} のトークンを生成`);
-            }
+            const kws = [...pick.keywords];
+            p.field = [...p.field, makeToken(pick.name, pick.stat, {
+              copyOf: pick.id,
+              keywords: kws,
+              canAttack: kws.includes("speed") || kws.includes("rush"),
+              noFaceAttack: kws.includes("rush"),
+            })];
+            logs.push(`${pick.name} のトークンを生成`);
           }
           break;
         }
         case "sun_hector": {
           const empty = MAX_FIELD - p.field.length;
           for (let i = 0; i < empty; i++) {
-            p.field = [...p.field, makeToken("ヘクターの兵士", 3, { noFaceAttack: true })];
+            p.field = [...p.field, makeToken("ヘクターの兵士", 3, { noFaceAttack: true, canAttack: true })];
           }
-          p.field.forEach((x) => { if (x.name === "ヘクターの兵士") x.canAttack = true; });
           logs.push(`空き枠に兵士を${empty}体展開`);
           break;
         }
         case "earth_emerada": {
           const t = o.field.filter((x) => !isInvincible(x));
-          if (t.length) {
-            setPendingTarget({ kind: "destroy", players, logs, from: u.uid });
-            return;
-          }
+          if (t.length) { setPendingTarget({ kind: "destroy", players, logs }); return; }
           break;
         }
         case "moon_witch":
@@ -587,7 +649,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         }
         case "earth_crest":
           p.pendingCost = (p.pendingCost || 0) + 1;
-          if (p.hand.length) { setPendingTarget({ kind: "reduce1", players, logs }); return; }
+          if (p.hand.some((h) => h.cardId)) { setPendingTarget({ kind: "reduce1", players, logs }); return; }
           break;
         case "sun_order":
           for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
@@ -598,11 +660,9 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           drawCards(p, 2);
           logs.push("2ドロー");
           break;
-        case "earth_order": {
-          const t = p.field.filter((x) => x.attacked && x.cost <= p.cost);
-          if (t.length) { setPendingTarget({ kind: "reattack", players, logs }); return; }
-          break;
-        }
+        case "earth_order":
+          setPendingTarget({ kind: "reattack", players, logs });
+          return;
         case "sun_judgment":
           [...o.field].forEach((x) => damage(players, oppId, x.uid, 6, logs));
           logs.push("相手全体に6ダメージ");
@@ -614,7 +674,9 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         case "earth_judgment":
           for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
             p.field = [...p.field, makeToken("大地の守人", 6)];
-          p.field.forEach((x) => { if (!x.keywords.includes("defender")) x.keywords.push("defender"); });
+          p.field.forEach((x) => {
+            if (!isInvincible(x) && !x.keywords.includes("defender")) x.keywords.push("defender");
+          });
           logs.push("スタッツ6を2体展開・全体ディフェンダー");
           break;
         default:
@@ -626,14 +688,15 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
   }
 
   function setPendingTarget(pt) {
+    setSel(null);
     setPending(pt);
     setMode(pt.kind);
   }
 
   /* ---- 対象選択の確定 ---- */
-  async function resolveTarget(targetUid, isMine) {
+  async function resolveTarget(targetUid) {
     if (!pending) return;
-    const { kind, players, logs, from } = pending;
+    const { kind, players, logs } = pending;
     const p = players[myId], o = players[oppId];
 
     switch (kind) {
@@ -646,6 +709,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       case "destroyDraw":
         destroy(players, oppId, targetUid, logs);
         drawCards(p, 1);
+        logs.push("1ドロー");
         break;
       case "crest": {
         damage(players, oppId, targetUid, 4, logs);
@@ -659,7 +723,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         if (t) {
           o.field = o.field.filter((x) => x.uid !== targetUid);
           const back = t.token
-            ? { uid: uid(), cardId: null, token: true, name: t.name, stat: t.stat, costMod: 0, tokenCost: 1 }
+            ? { uid: uid(), cardId: null, token: true, name: t.name, stat: t.stat, costMod: 0 }
             : { uid: t.uid, cardId: t.cardId, costMod: 0 };
           if (o.hand.length < MAX_HAND) o.hand = [...o.hand, back];
           else o.grave = [...o.grave, back];
@@ -670,7 +734,7 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       }
       case "reduce1": {
         const idx = p.hand.findIndex((h) => h.uid === targetUid);
-        if (idx >= 0) {
+        if (idx >= 0 && p.hand[idx].cardId) {
           p.hand[idx].costMod = (p.hand[idx].costMod || 0) - 1;
           logs.push("手札1枚のコスト-1");
         }
@@ -678,8 +742,24 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       }
       case "reattack": {
         const t = p.field.find((x) => x.uid === targetUid);
-        if (t) { t.attacked = false; t.canAttack = true; logs.push(`${t.name} が再攻撃可能`); }
+        if (t && t.attacked && !isInvincible(t)) {
+          t.attacked = false;
+          t.canAttack = true;
+          logs.push(`${t.name} が再攻撃可能`);
+        }
         break;
+      }
+      case "goblin": {
+        const tg = o.field.find((x) => x.uid === targetUid);
+        if (tg && !isInvincible(tg)) {
+          tg.stat -= 1;
+          logs.push(`月のゴブリン: ${tg.name} -1`);
+          if (tg.stat <= 0) destroy(players, oppId, tg.uid, logs);
+        }
+        setPending(null);
+        setMode(null);
+        await resolveAttack(players, logs, pending.atk);
+        return;
       }
       default: break;
     }
@@ -689,52 +769,71 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
     await commit(players, logs);
   }
 
-  /* ---- 攻撃 ---- */
+  /* ---- 攻撃宣言 ---- */
   async function attack(attackerUid, targetUid, toFace) {
-    if (!isMyTurn) return;
+    if (!canMain) return;
     const players = clone();
     const p = players[myId], o = players[oppId];
     const a = p.field.find((x) => x.uid === attackerUid);
     if (!a || a.attacked || !a.canAttack) return;
+    if (toFace && a.noFaceAttack) return;
 
     const logs = [];
+    const eid = effectId(a);
 
     // 攻撃時誘発
-    if (a.cardId === "sun_goblin") {
-      p.field.forEach((x) => { if (x.uid !== a.uid) x.stat += 1; });
+    if (eid === "sun_goblin") {
+      p.field.forEach((x) => { if (x.uid !== a.uid && !isInvincible(x)) x.stat += 1; });
       logs.push("太陽のゴブリン: 自軍+1");
     }
-    if (a.cardId === "moon_goblin") {
-      const t = o.field.filter((x) => !isInvincible(x));
-      if (t.length) {
-        const tg = t.find((x) => x.uid === targetUid) || t[0];
-        tg.stat -= 1;
-        logs.push(`月のゴブリン: ${tg.name} -1`);
-        if (tg.stat <= 0) destroy(players, oppId, tg.uid, logs);
-      }
-    }
-    if (a.cardId === "earth_goblin") {
+    if (eid === "earth_goblin") {
       if (p.maxCost < 6) { activateCost(p); logs.push("地球のゴブリン: コスト有効化"); }
       else { drawCards(p, 1); logs.push("地球のゴブリン: 1ドロー"); }
     }
-    if (a.cardId === "earth_abyss" && !a.firstAttackUsed) {
+    if (eid === "earth_abyss" && !a.firstAttackUsed) {
       a.firstAttackUsed = true;
       o.hp -= 6;
       logs.push("地球の底より出でる者: 相手に6ダメージ");
-      const w = checkWin(players, myId);
-      if (w) { await commitWin(players, logs, w); return; }
+      if (o.hp <= 0) {
+        a.attacked = true;
+        a.canAttack = false;
+        await commit(players, logs);
+        return;
+      }
     }
+
+    const atk = { attackerUid, targetUid, toFace };
+
+    if (eid === "moon_goblin") {
+      const t = o.field.filter((x) => !isInvincible(x));
+      if (t.length) {
+        setPendingTarget({ kind: "goblin", players, logs, atk });
+        return;
+      }
+    }
+
+    await resolveAttack(players, logs, atk);
+  }
+
+  /* ---- 戦闘解決 ---- */
+  async function resolveAttack(players, logs, atk) {
+    const p = players[myId], o = players[oppId];
+    const a = p.field.find((x) => x.uid === atk.attackerUid);
+    if (!a) { await commit(players, logs); return; }
 
     a.attacked = true;
     a.canAttack = false;
 
-    if (toFace) {
+    if (atk.toFace) {
       o.hp -= a.stat;
       logs.push(`${a.name} が相手プレイヤーに${a.stat}ダメージ`);
     } else {
-      const d = o.field.find((x) => x.uid === targetUid);
-      if (d) {
+      const d = o.field.find((x) => x.uid === atk.targetUid);
+      if (!d) {
+        logs.push(`${a.name} の攻撃対象がいなくなった`);
+      } else {
         const aStat = a.stat, dStat = d.stat;
+        logs.push(`${a.name} が ${d.name} を攻撃`);
         if (!isInvincible(d)) {
           d.stat -= aStat;
           if (d.stat <= 0) destroy(players, oppId, d.uid, logs);
@@ -743,96 +842,107 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           a.stat -= dStat;
           if (a.stat <= 0) destroy(players, myId, a.uid, logs);
         }
-        logs.push(`${a.name} が ${d.name} を攻撃`);
       }
     }
 
-    const w = checkWin(players, myId);
-    if (w) { await commitWin(players, logs, w); return; }
     await commit(players, logs);
+  }
+
+  /* ---- ドローフェーズ ---- */
+  async function drawStep() {
+    if (!isMyTurn || phase !== "draw") return;
+    const players = clone();
+    drawCards(players[myId], 1);
+    await commit(players, ["カードを1枚引いた"], { turnPhase: "main" });
+  }
+
+  /* ---- 生贄フェーズへ ---- */
+  async function toSacrifice() {
+    if (!canMain) return;
+    setSel(null);
+    await push({
+      turnPhase: "sacrifice",
+      log: [...(state.log || []), { by: myId, t: "生贄フェーズへ" }].slice(-30),
+    });
   }
 
   /* ---- 生贄 ---- */
   async function sacrificeCard(idx) {
-    if (!isMyTurn || me.sacrificedThisTurn || me.maxCost >= MAX_COST) return;
+    if (!isMyTurn || phase !== "sacrifice") return;
+    if (me.sacrificedThisTurn || me.maxCost >= MAX_COST) return;
     const players = clone();
     const p = players[myId];
     const inst = p.hand[idx];
-    const card = getCard(inst.cardId);
+    const card = inst && getCard(inst.cardId);
+    if (!card) return;
     p.hand = p.hand.filter((_, i) => i !== idx);
     p.sacrifice = [...p.sacrifice, { uid: inst.uid, cardId: inst.cardId }];
     p.maxCost += 1;
     p.hp += card.cost;
     p.sacrificedThisTurn = true;
-    const logs = [`${card.name} を生贄に（コスト+1 / HP+${card.cost}）`];
+    const logs = [`${card.name} を生贄に（コスト上限+1 / HP+${card.cost} / 1ドロー）`];
     drawCards(p, 1);
     await commit(players, logs);
   }
 
   /* ---- ターン終了 ---- */
   async function endTurn() {
-    if (!isMyTurn) return;
+    if (!isMyTurn || phase !== "sacrifice" || mode) return;
     const players = clone();
     const p = players[myId], o = players[oppId];
-    const logs = [];
+    const logs = ["ターン終了"];
 
     p.field.forEach((x) => { x.attacked = false; x.canAttack = true; x.noFaceAttack = false; });
     p.sacrificedThisTurn = false;
 
-    const skip = players.__skip || state.skipNext;
-    delete players.__skip;
-
     let nextTurn = oppId;
-    if (skip === oppId) {
-      logs.push("相手のターンをスキップ");
+    let starter = o;
+    if (state.skipNext === oppId) {
+      logs.push("相手のターンをスキップ（もう一度自分のターン）");
       nextTurn = myId;
-      if (p.pendingCost) { for (let i = 0; i < p.pendingCost; i++) activateCost(p); p.pendingCost = 0; }
-      p.cost = p.maxCost;
-      drawCards(p, 1);
-    } else {
-      if (o.pendingCost) { for (let i = 0; i < o.pendingCost; i++) activateCost(o); o.pendingCost = 0; }
-      o.cost = o.maxCost;
-      o.field.forEach((x) => { x.canAttack = true; x.attacked = false; });
-      drawCards(o, 1);
+      starter = p;
     }
 
-    if (p.dead) { await commitWin(players, [...logs, "デッキ切れ"], oppId); return; }
-    if (o.dead) { await commitWin(players, [...logs, "デッキ切れ"], myId); return; }
+    // 次のターンプレイヤーのターン開始処理（ドローは手動）
+    if (starter.pendingCost) {
+      for (let i = 0; i < starter.pendingCost; i++) activateCost(starter);
+      starter.pendingCost = 0;
+    }
+    starter.cost = starter.maxCost;
+    starter.field.forEach((x) => { x.canAttack = true; x.attacked = false; });
 
-    await push({
-      players, turn: nextTurn, skipNext: null,
-      turnCount: state.turnCount + 1, log: [...log(""), ...logs].filter(Boolean).slice(-20),
-    });
-  }
-
-  async function commit(players, logs) {
-    if (players[myId].dead) { await commitWin(players, [...logs, "デッキ切れ"], oppId); return; }
-    if (players[oppId].dead) { await commitWin(players, [...logs, "デッキ切れ"], myId); return; }
-    const skip = players.__skip;
-    delete players.__skip;
+    const entries = logs.map((t) => ({ by: myId, t }));
     await push({
       players,
-      ...(skip ? { skipNext: skip } : {}),
-      log: [...(state.log || []), ...logs].slice(-20),
-    });
-  }
-
-  async function commitWin(players, logs, winner) {
-    delete players.__skip;
-    await push({
-      players, winner, phase: "end",
-      log: [...(state.log || []), ...logs, "決着！"].slice(-20),
+      turn: nextTurn,
+      turnPhase: "draw",
+      skipNext: null,
+      turnCount: state.turnCount + 1,
+      log: [...(state.log || []), ...entries].slice(-30),
     });
   }
 
   /* ---- 攻撃可能判定 ---- */
   const oppHasDefender = opp.field.some((x) => hasKw(x, "defender"));
-  const canTargetFace = !oppHasDefender;
-
   const attackable = (u) => {
     if (oppHasDefender) return hasKw(u, "defender");
     return !hasKw(u, "untargetable_by_attack");
   };
+  const selUnit = me.field.find((x) => x.uid === sel);
+  const canFace = selUnit && !oppHasDefender && !selUnit.noFaceAttack;
+
+  const oppTargetable = (u) => {
+    if (OPP_TARGET_MODES.includes(mode)) {
+      if (isInvincible(u)) return false;
+      if (mode === "bounce" && u.cost > 5) return false;
+      return true;
+    }
+    if (!mode && sel && canMain) return attackable(u);
+    return false;
+  };
+
+  const logText = (l) =>
+    typeof l === "string" ? l : `${l.by === myId ? "自分" : "相手"}｜${l.t}`;
 
   /* ============ 描画 ============ */
   if (state.phase === "end") {
@@ -841,6 +951,9 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         <h1 className="text-4xl font-bold my-10">
           {state.winner === myId ? "勝利！" : "敗北..."}
         </h1>
+        <div className="text-xs text-slate-400 mb-6">
+          {(state.log || []).slice(-5).map((l, i) => <div key={i}>{logText(l)}</div>)}
+        </div>
         <button onClick={() => location.reload()} className="px-6 py-3 rounded-lg bg-slate-700">
           もう一度
         </button>
@@ -849,16 +962,23 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
   }
 
   return (
-    <main className="min-h-screen max-w-lg mx-auto pb-4 text-sm">
-      {/* 相手情報 */}
-      <div className="p-3 bg-slate-800 sticky top-0 z-10">
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-slate-400">相手</span>
-          <span className="text-xs">手札 {opp.hand.length} / 山 {opp.deck.length}</span>
+    <main className="min-h-screen max-w-lg mx-auto pb-28 text-sm">
+      {/* 相手情報 + ターン表示 */}
+      <div className="sticky top-0 z-10">
+        <div className="p-3 bg-slate-800">
+          <div className="flex justify-between items-center">
+            <span className="text-xs text-slate-400">相手</span>
+            <span className="text-xs">手札 {opp.hand.length} / 山 {opp.deck.length} / 生贄 {opp.sacrifice.length}</span>
+          </div>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-2xl font-bold text-red-400">HP {opp.hp}</span>
+            <span className="text-xs">コスト {opp.cost}/{opp.maxCost}</span>
+          </div>
         </div>
-        <div className="flex justify-between items-center mt-1">
-          <span className="text-2xl font-bold text-red-400">HP {opp.hp}</span>
-          <span className="text-xs">コスト {opp.cost}/{opp.maxCost}</span>
+        <div className={`px-3 py-1 text-center text-xs font-bold ${
+          isMyTurn ? "bg-amber-500 text-slate-900" : "bg-slate-700 text-slate-300"
+        }`}>
+          ターン{state.turnCount}｜{isMyTurn ? "あなた" : "相手"}の{PHASE_LABEL[phase]}フェーズ
         </div>
       </div>
 
@@ -869,13 +989,14 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           {opp.field.map((u) => (
             <UnitCard
               key={u.uid} u={u} foe
-              dim={mode && mode !== "reattack" && mode !== "reduce1" ? false : true}
+              targetable={oppTargetable(u)}
               onTap={() => {
-                if (mode && mode !== "reattack" && mode !== "reduce1") {
-                  if (mode === "bounce" && u.cost > 5) return;
-                  if (isInvincible(u)) return;
-                  resolveTarget(u.uid, false);
-                } else if (sel && isMyTurn && attackable(u)) {
+                if (OPP_TARGET_MODES.includes(mode)) {
+                  if (oppTargetable(u)) resolveTarget(u.uid);
+                  return;
+                }
+                if (mode) return;
+                if (sel && canMain && attackable(u)) {
                   attack(sel, u.uid, false);
                   setSel(null);
                 } else {
@@ -888,18 +1009,26 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       </div>
 
       {/* 相手プレイヤーへの攻撃 */}
-      {sel && canTargetFace && isMyTurn && (
-        <button
-          onClick={() => { attack(sel, null, true); setSel(null); }}
-          className="w-full py-2 bg-red-600 font-bold text-xs"
-        >
-          相手プレイヤーを攻撃
-        </button>
+      {sel && canMain && (
+        canFace ? (
+          <button
+            onClick={() => { attack(sel, null, true); setSel(null); }}
+            className="w-full py-2 bg-red-600 font-bold text-xs"
+          >
+            相手プレイヤーを攻撃
+          </button>
+        ) : (
+          <div className="w-full py-2 bg-slate-800 text-center text-[11px] text-slate-400">
+            {oppHasDefender
+              ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
+              : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
+          </div>
+        )
       )}
 
       {/* ログ */}
-      <div className="px-3 py-2 text-[10px] text-slate-500 h-12 overflow-y-auto bg-slate-900/50">
-        {(state.log || []).slice(-3).map((l, i) => <div key={i}>{l}</div>)}
+      <div className="px-3 py-2 text-[10px] text-slate-400 h-20 overflow-y-auto bg-slate-900/50">
+        {(state.log || []).slice(-6).map((l, i) => <div key={i}>{logText(l)}</div>)}
       </div>
 
       {/* 自分の場 */}
@@ -909,15 +1038,20 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           {me.field.map((u) => (
             <UnitCard
               key={u.uid} u={u} selected={sel === u.uid}
+              targetable={mode === "reattack" && u.attacked && !isInvincible(u)}
+              ready={canMain && u.canAttack && !u.attacked}
               onTap={() => {
-                if (mode === "reattack") { resolveTarget(u.uid, true); return; }
-                if (isMyTurn && u.canAttack && !u.attacked) {
+                if (mode === "reattack") {
+                  if (u.attacked && !isInvincible(u)) resolveTarget(u.uid);
+                  return;
+                }
+                if (mode) return;
+                if (canMain && u.canAttack && !u.attacked) {
                   setSel(sel === u.uid ? null : u.uid);
                 } else {
                   setDetail({ unit: u });
                 }
               }}
-              onLong={() => setDetail({ unit: u })}
             />
           ))}
         </div>
@@ -929,11 +1063,8 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
           <span className="text-2xl font-bold text-emerald-400">HP {me.hp}</span>
           <span className="text-sm">コスト {me.cost}/{me.maxCost}</span>
         </div>
-        <div className="flex justify-between text-xs text-slate-400 mt-1">
-          <span>山 {me.deck.length} / 生贄 {me.sacrifice.length}</span>
-          <span className={isMyTurn ? "text-amber-400 font-bold" : ""}>
-            {isMyTurn ? "あなたのターン" : "相手のターン"}
-          </span>
+        <div className="text-xs text-slate-400 mt-1">
+          山 {me.deck.length} / 生贄 {me.sacrifice.length}
         </div>
       </div>
 
@@ -943,27 +1074,37 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
         <div className="flex gap-1 overflow-x-auto pb-2">
           {me.hand.map((h, i) => {
             const c = getCard(h.cardId);
-            if (!c) return null;
+            if (!c) {
+              return (
+                <div key={h.uid} className="shrink-0 w-24 p-2 rounded-lg border-2 border-slate-800 bg-slate-900 opacity-50">
+                  <div className="text-[9px] text-slate-400">トークン</div>
+                  <div className="text-[10px] font-bold leading-tight mt-1">{h.name}</div>
+                  <div className="text-[9px] text-slate-500">使用不可</div>
+                </div>
+              );
+            }
             const cost = Math.max(0, c.cost + (h.costMod || 0));
-            const can = isMyTurn && me.cost >= cost;
-            const canHaste = isMyTurn && me.cost >= cost + HASTE_EXTRA
-              && c.type === "character" && !c.keywords.includes("speed");
+            const fieldOk = c.type !== "character" || me.field.length < MAX_FIELD;
+            const can = canMain && me.cost >= cost && fieldOk && usableNow(c.id, me);
+            const canHaste = canMain && fieldOk && me.cost >= cost + HASTE_EXTRA
+              && c.type === "character" && !c.keywords.includes("speed") && !c.keywords.includes("rush");
+            const canSacNow = isMyTurn && phase === "sacrifice" && !me.sacrificedThisTurn && me.maxCost < MAX_COST;
+            const bright = mode === "reduce1" || can || canSacNow;
             return (
               <div key={h.uid} className="shrink-0 w-24">
                 <button
                   onClick={() => {
-                    if (mode === "reduce1") { resolveTarget(h.uid, true); return; }
+                    if (mode === "reduce1") { resolveTarget(h.uid); return; }
+                    if (mode) return;
                     setDetail({ card: c, handIdx: i, cost, can, canHaste });
                   }}
                   className={`w-full p-2 rounded-lg text-left border-2 ${
-                    can ? "border-slate-500 bg-slate-800" : "border-slate-800 bg-slate-900 opacity-50"
+                    mode === "reduce1" ? "border-sky-400 bg-slate-800"
+                    : bright ? "border-slate-500 bg-slate-800" : "border-slate-800 bg-slate-900 opacity-50"
                   }`}
                 >
                   <div className="flex justify-between items-start">
-                    <span className={`text-[9px] ${
-                      c.faction === "sun" ? "text-amber-400"
-                      : c.faction === "moon" ? "text-indigo-300" : "text-emerald-300"
-                    }`}>{FACTION_LABEL[c.faction]}</span>
+                    <span className={`text-[9px] ${factionText(c.faction)}`}>{FACTION_LABEL[c.faction]}</span>
                     <span className="text-[11px] font-bold bg-slate-700 rounded px-1">{cost}</span>
                   </div>
                   <div className="text-[10px] font-bold leading-tight mt-1">{c.name}</div>
@@ -976,19 +1117,72 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       </div>
 
       {/* 操作 */}
-      <div className="p-3 flex gap-2">
-        <button
-          onClick={endTurn}
-          disabled={!isMyTurn}
-          className="flex-1 py-3 rounded-lg bg-amber-500 text-slate-900 font-bold disabled:opacity-30"
-        >
-          ターン終了
-        </button>
+      <div className="px-3 pb-3">
+        <PhaseBar phase={phase} mine={isMyTurn} />
+
+        {!isMyTurn && (
+          <div className="w-full py-3 rounded-lg bg-slate-800 text-center text-slate-400">
+            相手の{PHASE_LABEL[phase]}フェーズ中です…
+          </div>
+        )}
+
+        {isMyTurn && phase === "draw" && (
+          <button
+            onClick={drawStep}
+            className="w-full py-3 rounded-lg bg-amber-500 text-slate-900 font-bold"
+          >
+            カードを引く（山札 {me.deck.length}枚）
+          </button>
+        )}
+
+        {isMyTurn && phase === "main" && (
+          <>
+            <div className="text-[11px] text-slate-400 mb-2 text-center">
+              カードの使用・攻撃ができます
+            </div>
+            <button
+              disabled={!!mode}
+              onClick={toSacrifice}
+              className="w-full py-3 rounded-lg bg-amber-500 text-slate-900 font-bold disabled:opacity-30"
+            >
+              メインフェーズ終了 → 生贄フェーズへ
+            </button>
+          </>
+        )}
+
+        {isMyTurn && phase === "sacrifice" && (
+          <>
+            <div className="text-[11px] text-slate-400 mb-2 text-center">
+              {me.sacrificedThisTurn
+                ? "このターンは生贄済みです"
+                : me.maxCost >= MAX_COST
+                  ? "コスト上限のため生贄できません"
+                  : "手札をタップして生贄にできます（任意・1回まで）"}
+            </div>
+            <button
+              onClick={endTurn}
+              className="w-full py-3 rounded-lg bg-indigo-500 font-bold"
+            >
+              {me.sacrificedThisTurn ? "ターン終了" : "生贄せずにターン終了"}
+            </button>
+          </>
+        )}
       </div>
 
       {mode && (
-        <div className="fixed bottom-0 left-0 right-0 bg-sky-600 p-3 text-center text-sm font-bold">
-          対象を選んでください
+        <div className="fixed bottom-0 left-0 right-0 bg-sky-600 p-3 text-center text-sm font-bold z-30">
+          {MODE_MSG[mode] || "対象を選んでください"}
+        </div>
+      )}
+
+      {/* ターン切り替えバナー */}
+      {banner && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+          <div className={`px-8 py-5 rounded-2xl text-2xl font-bold shadow-2xl ${
+            banner.mine ? "bg-amber-500 text-slate-900" : "bg-slate-700 text-white"
+          }`}>
+            {banner.text}
+          </div>
         </div>
       )}
 
@@ -996,13 +1190,15 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
       {detail && (
         <ActionModal
           detail={detail}
+          phase={phase}
+          isMyTurn={isMyTurn}
           onClose={() => setDetail(null)}
           onPlay={(haste) => {
             playCard(detail.handIdx, haste);
             setDetail(null);
           }}
           onSac={() => { sacrificeCard(detail.handIdx); setDetail(null); }}
-          canSac={isMyTurn && !me.sacrificedThisTurn && me.maxCost < MAX_COST}
+          canSac={isMyTurn && phase === "sacrifice" && !me.sacrificedThisTurn && me.maxCost < MAX_COST}
         />
       )}
     </main>
@@ -1010,12 +1206,14 @@ function GameScreen({ state, myId, room, push, detail, setDetail, pending, setPe
 }
 
 /* ============ ユニット表示 ============ */
-function UnitCard({ u, foe, selected, onTap }) {
+function UnitCard({ u, foe, selected, targetable, ready, onTap }) {
   return (
     <button
       onClick={onTap}
       className={`w-[68px] p-1 rounded-lg border-2 text-left ${
         selected ? "border-amber-400 bg-amber-950"
+        : targetable ? "border-sky-400 bg-slate-800"
+        : ready ? "border-emerald-500 bg-slate-800"
         : foe ? "border-red-900 bg-slate-800" : "border-slate-600 bg-slate-800"
       } ${u.attacked ? "opacity-50" : ""}`}
     >
@@ -1026,6 +1224,7 @@ function UnitCard({ u, foe, selected, onTap }) {
           {u.keywords?.includes("defender") && <span className="text-[8px] bg-blue-600 px-1 rounded">守</span>}
           {u.keywords?.includes("invincible") && <span className="text-[8px] bg-yellow-600 px-1 rounded">無</span>}
           {u.keywords?.includes("untargetable_by_attack") && <span className="text-[8px] bg-purple-600 px-1 rounded">避</span>}
+          {u.noFaceAttack && <span className="text-[8px] bg-red-800 px-1 rounded">突</span>}
         </div>
       </div>
     </button>
@@ -1033,10 +1232,11 @@ function UnitCard({ u, foe, selected, onTap }) {
 }
 
 /* ============ アクションモーダル ============ */
-function ActionModal({ detail, onClose, onPlay, onSac, canSac }) {
+function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }) {
   const c = detail.card || (detail.unit && detail.unit.cardId ? getCard(detail.unit.cardId) : null);
   const u = detail.unit;
   const isHand = detail.handIdx !== undefined;
+  const copySrc = u && u.copyOf ? getCard(u.copyOf) : null;
 
   return (
     <div onClick={onClose} className="fixed inset-0 bg-black/70 flex items-end justify-center z-50">
@@ -1046,10 +1246,7 @@ function ActionModal({ detail, onClose, onPlay, onSac, canSac }) {
       >
         {c ? (
           <>
-            <div className={`text-xs mb-1 ${
-              c.faction === "sun" ? "text-amber-400"
-              : c.faction === "moon" ? "text-indigo-300" : "text-emerald-300"
-            }`}>
+            <div className={`text-xs mb-1 ${factionText(c.faction)}`}>
               {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
             </div>
             <div className="text-lg font-bold mb-1">{c.name}</div>
@@ -1065,11 +1262,21 @@ function ActionModal({ detail, onClose, onPlay, onSac, canSac }) {
           <>
             <div className="text-xs mb-1 text-slate-400">トークン</div>
             <div className="text-lg font-bold mb-1">{u?.name}</div>
-            <div className="text-sm text-slate-300 mb-4">スタッツ {u?.stat}</div>
+            <div className="text-sm text-slate-300 mb-2">スタッツ {u?.stat}</div>
+            {copySrc && (
+              <p className="text-sm leading-relaxed text-slate-200 mb-2">
+                {copySrc.text}
+                <span className="text-slate-400">（トークンのため召喚時効果は発動しない）</span>
+              </p>
+            )}
+            {u?.noFaceAttack && (
+              <p className="text-xs text-slate-400 mb-2">出たターンは相手プレイヤーを攻撃できません。</p>
+            )}
+            <div className="mb-2" />
           </>
         )}
 
-        {isHand && (
+        {isHand && isMyTurn && phase === "main" && (
           <div className="flex flex-col gap-2">
             <button
               disabled={!detail.can}
@@ -1083,17 +1290,24 @@ function ActionModal({ detail, onClose, onPlay, onSac, canSac }) {
                 onClick={() => onPlay(true)}
                 className="w-full py-3 rounded-lg bg-red-500 font-bold"
               >
-                即時召喚（コスト {detail.cost + 4}）
+                即時召喚（コスト {detail.cost + HASTE_EXTRA}）
               </button>
             )}
-            <button
-              disabled={!canSac}
-              onClick={onSac}
-              className="w-full py-3 rounded-lg bg-indigo-600 font-bold disabled:opacity-30"
-            >
-              生贄にする（コスト+1・HP+{c?.cost || 0}・1ドロー）
-            </button>
           </div>
+        )}
+
+        {isHand && isMyTurn && phase === "sacrifice" && (
+          <button
+            disabled={!canSac}
+            onClick={onSac}
+            className="w-full py-3 rounded-lg bg-indigo-600 font-bold disabled:opacity-30"
+          >
+            生贄にする（コスト上限+1・HP+{c?.cost || 0}・1ドロー）
+          </button>
+        )}
+
+        {isHand && isMyTurn && phase === "draw" && (
+          <div className="text-xs text-slate-400 text-center">先にカードを引いてください</div>
         )}
 
         <button onClick={onClose} className="w-full mt-3 py-2 rounded-lg bg-slate-700 text-sm">
