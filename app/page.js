@@ -13,6 +13,7 @@ const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" 
 const CPU_ID = "cpu";
 const YOU_ID = "you";
 const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
+const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 
 const MODE_MSG = {
   damage3: "3ダメージを与える相手キャラを選んでください",
@@ -33,6 +34,16 @@ const roomId = () => Math.random().toString(36).slice(2, 6).toUpperCase();
 const fxClass = (f) => (f === "sun" || f === "moon" || f === "earth" ? `fx-${f}` : "fx-none");
 const tierColor = (t) =>
   t === 1 ? "bg-amber-500 text-slate-900" : t === 2 ? "bg-sky-600 text-white" : "bg-slate-600 text-white";
+
+// ブラウザに保存したデータを読む
+function loadSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 // CPUの戦い方を、lib/cpu.js に存在するものから選ぶ
 function resolveStyle(wants) {
@@ -93,9 +104,10 @@ function diffBoards(prevP, curP, myId, oppId, lines) {
 
 /* ============ メイン ============ */
 export default function Home() {
+  const [loaded, setLoaded] = useState(false);
   const [screen, setScreen] = useState("menu");
   const [selection, setSelection] = useState({});
-  const [myId] = useState(() => E.uid());
+  const [myId, setMyId] = useState("");
   const [room, setRoom] = useState("");
   const [state, setState] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -106,10 +118,90 @@ export default function Home() {
   const [cpuState, setCpuState] = useState(null);
   const [cpuDeck, setCpuDeck] = useState(null);
 
-  useEffect(() => () => unsubRef.current && unsubRef.current(), []);
+  // 起動時：保存データを復元
+  useEffect(() => {
+    const sv = loadSave() || {};
+    setMyId(sv.myId || E.uid());
+    if (sv.selection) setSelection(sv.selection);
+    let sc = sv.screen || "menu";
+    if (sc === "cpu") {
+      if (sv.cpuState && sv.cpuDeck) {
+        setCpuState(sv.cpuState);
+        setCpuDeck(sv.cpuDeck);
+      } else {
+        sc = "deck";
+      }
+    }
+    if (sc === "game") {
+      if (sv.room) {
+        setRoom(sv.room);
+        subscribe(sv.room);
+      } else {
+        sc = "menu";
+      }
+    }
+    setScreen(sc);
+    setLoaded(true);
+    return () => unsubRef.current && unsubRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 状態が変わるたびに保存
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(
+        SAVE_KEY,
+        JSON.stringify({
+          myId,
+          screen,
+          selection,
+          room,
+          cpuState: screen === "cpu" ? cpuState : null,
+          cpuDeck: screen === "cpu" ? cpuDeck : null,
+        })
+      );
+    } catch {
+      // 保存できなくてもゲームは続ける
+    }
+  }, [loaded, myId, screen, selection, room, cpuState, cpuDeck]);
 
   const deckComplete = SLOTS.every((s) => selection[s]);
   const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
+
+  /* ---- 対戦から抜ける（to: 移動先の画面） ---- */
+  function leaveGame(to = "menu") {
+    if (unsubRef.current) {
+      unsubRef.current();
+      unsubRef.current = null;
+    }
+    setState(null);
+    setRoom("");
+    setCpuState(null);
+    setCpuDeck(null);
+    setDetail(null);
+    setScreen(to);
+  }
+
+  /* ---- リタイア ---- */
+  async function retire() {
+    // オンライン対戦中なら相手の勝ちにする
+    if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
+      const oppId = E.otherId(state, myId);
+      if (oppId) {
+        try {
+          await updateDoc(doc(db, "rooms", room), {
+            winner: oppId,
+            phase: "end",
+            log: [...(state.log || []), { by: myId, t: "リタイアしました" }].slice(-30),
+          });
+        } catch {
+          // 通信に失敗してもタイトルへは戻る
+        }
+      }
+    }
+    leaveGame("menu");
+  }
 
   /* ---- ルーム作成 ---- */
   async function createRoom() {
@@ -128,6 +220,7 @@ export default function Home() {
       players: { [myId]: E.newPlayer(deck, selection) },
     };
     await setDoc(doc(db, "rooms", id), init);
+    setState(null);
     setRoom(id);
     subscribe(id);
     setScreen("game");
@@ -149,15 +242,27 @@ export default function Home() {
       guest: myId, players: hp, phase: "play", turnPhase: "main",
       log: [...d.log, "対戦開始！ 先攻は初ターンドローなし"],
     });
+    setMsg("");
+    setState(null);
     setRoom(id);
     subscribe(id);
     setScreen("game");
   }
 
   function subscribe(id) {
-    unsubRef.current = onSnapshot(doc(db, "rooms", id), (s) => {
-      if (s.exists()) setState(s.data());
-    });
+    if (unsubRef.current) unsubRef.current();
+    unsubRef.current = onSnapshot(
+      doc(db, "rooms", id),
+      (s) => {
+        if (s.exists()) {
+          setState(s.data());
+        } else {
+          // ルームが無くなっていたらタイトルへ
+          leaveGame("menu");
+        }
+      },
+      () => leaveGame("menu")
+    );
   }
 
   async function pushOnline(next) {
@@ -181,6 +286,9 @@ export default function Home() {
     );
     setScreen("cpu");
   }
+
+  /* ============ 読み込み中 ============ */
+  if (!loaded) return <div className="p-8 text-center sme-label">LOADING...</div>;
 
   /* ============ 画面: メニュー ============ */
   if (screen === "menu") {
@@ -213,7 +321,15 @@ export default function Home() {
   if (screen === "deck") {
     return (
       <main className="min-h-screen p-4 max-w-lg mx-auto pb-48">
-        <h2 className="sme-heading text-2xl mb-1">デッキ構築</h2>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="sme-heading text-2xl">デッキ構築</h2>
+          <button
+            onClick={() => setScreen("menu")}
+            className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+          >
+            タイトルへ
+          </button>
+        </div>
         <p className="text-xs text-slate-400 mb-4">
           各枠から1種類ずつ選択（「詳細」で効果を確認）
         </p>
@@ -341,7 +457,7 @@ export default function Home() {
           <button onClick={() => joinRoom(room)} className="sme-btn sme-btn-moon">
             参加する
           </button>
-          <button onClick={() => setScreen("deck")} className="sme-btn sme-btn-ghost mt-2">
+          <button onClick={() => { setMsg(""); setScreen("deck"); }} className="sme-btn sme-btn-ghost mt-2">
             戻る
           </button>
         </div>
@@ -359,7 +475,9 @@ export default function Home() {
         detail={detail}
         setDetail={setDetail}
         onRetry={startCpu}
-        onMenu={() => { setCpuState(null); setScreen("deck"); }}
+        onDeck={() => leaveGame("deck")}
+        onTitle={() => leaveGame("menu")}
+        onRetire={retire}
       />
     );
   }
@@ -373,13 +491,15 @@ export default function Home() {
       apply={pushOnline}
       detail={detail}
       setDetail={setDetail}
-      onRetry={() => location.reload()}
+      onDeck={() => leaveGame("deck")}
+      onTitle={() => leaveGame("menu")}
+      onRetire={retire}
     />
   );
 }
 
 /* ============ CPU戦（CPUの手番を自動で進める） ============ */
-function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onMenu }) {
+function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onDeck, onTitle, onRetire }) {
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
@@ -404,7 +524,9 @@ function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onMenu 
       setDetail={setDetail}
       cpuDeck={cpuDeck}
       onRetry={onRetry}
-      onMenu={onMenu}
+      onDeck={onDeck}
+      onTitle={onTitle}
+      onRetire={onRetire}
       onReplayingChange={setReplaying}
     />
   );
@@ -441,7 +563,7 @@ function DetailModal({ card, onClose }) {
 function PhaseBar({ phase, mine }) {
   const steps = ["draw", "main", "sacrifice"];
   return (
-    <div className="flex gap-1 mb-3">
+    <div className="flex gap-1 mb-2">
       {steps.map((s, i) => (
         <div key={s} className={`phase-step ${phase === s ? `on ${mine ? "" : "theirs"}` : ""}`}>
           {i + 1}. {PHASE_LABEL[s]}
@@ -470,8 +592,33 @@ function EmptySlots({ count }) {
   ));
 }
 
+/* ============ リタイア確認 ============ */
+function RetireConfirm({ isCpu, onYes, onNo }) {
+  return (
+    <div onClick={onNo} className="fixed inset-0 bg-black/75 flex items-center justify-center p-6 z-[60]">
+      <div onClick={(e) => e.stopPropagation()} className="sme-modal rounded-2xl p-5 max-w-xs w-full text-center">
+        <div className="sme-heading text-lg mb-2">リタイアしますか？</div>
+        <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+          {isCpu
+            ? "この対戦は終了し、タイトル画面に戻ります。"
+            : "相手の勝利となり、タイトル画面に戻ります。"}
+        </p>
+        <button onClick={onYes} className="sme-btn sme-btn-danger mb-2">
+          リタイアする
+        </button>
+        <button onClick={onNo} className="sme-btn sme-btn-ghost sme-btn-sm">
+          対戦を続ける
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ============ ゲーム画面（オンライン・CPU共通） ============ */
-function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRetry, onMenu, onReplayingChange }) {
+function GameScreen({
+  state, myId, room, apply, detail, setDetail, cpuDeck,
+  onRetry, onDeck, onTitle, onRetire, onReplayingChange,
+}) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
   const [pendingAttack, setPendingAttack] = useState(null); // 月のゴブリンの追加対象待ち
@@ -479,6 +626,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
   const [zone, setZone] = useState(null); // 生贄置き場の表示（"me" / "opp"）
   const [queue, setQueue] = useState([]); // 相手の行動の再生待ち
   const [showLog, setShowLog] = useState(false);
+  const [confirmRetire, setConfirmRetire] = useState(false);
   const lastTurnKey = useRef(null);
   const busy = useRef(false);
   const prevRef = useRef(null);
@@ -545,7 +693,16 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [state?.log]);
 
-  if (!state) return <div className="p-8 text-center sme-label">LOADING...</div>;
+  if (!state) {
+    return (
+      <div className="p-8 text-center">
+        <div className="sme-label mb-4">LOADING...</div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto mx-auto">
+          タイトルへ戻る
+        </button>
+      </div>
+    );
+  }
 
   if (state.phase === "waiting") {
     return (
@@ -556,6 +713,9 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
           <div className="sme-title text-5xl tracking-[0.3em] my-4">{room}</div>
           <p className="text-xs text-slate-400">このIDを相手に伝えてください</p>
         </div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost mt-6">
+          キャンセルしてタイトルへ
+        </button>
       </main>
     );
   }
@@ -563,7 +723,16 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
   const oppId = E.otherId(state, myId);
   const me = state.players[myId];
   const opp = state.players[oppId];
-  if (!me || !opp) return <div className="p-8 text-center sme-label">LOADING...</div>;
+  if (!me || !opp) {
+    return (
+      <div className="p-8 text-center">
+        <div className="sme-label mb-4">LOADING...</div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto mx-auto">
+          タイトルへ戻る
+        </button>
+      </div>
+    );
+  }
 
   const isMyTurn = state.turn === myId;
   const phase = E.phaseOf(state);
@@ -670,12 +839,19 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
           {(state.log || []).slice(-8).map(renderLog)}
         </div>
         <div className="flex flex-col gap-2">
-          <button onClick={onRetry} className="sme-btn sme-btn-sun sme-glow">
-            {isCpu ? "もう一度CPUと対戦" : "もう一度"}
-          </button>
-          {onMenu && (
-            <button onClick={onMenu} className="sme-btn sme-btn-ghost">
+          {onRetry && (
+            <button onClick={onRetry} className="sme-btn sme-btn-sun sme-glow">
+              もう一度CPUと対戦
+            </button>
+          )}
+          {onDeck && (
+            <button onClick={onDeck} className={`sme-btn ${onRetry ? "sme-btn-ghost" : "sme-btn-sun sme-glow"}`}>
               デッキ構築へ戻る
+            </button>
+          )}
+          {onTitle && (
+            <button onClick={onTitle} className="sme-btn sme-btn-ghost">
+              タイトルへ戻る
             </button>
           )}
         </div>
@@ -687,10 +863,10 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
   const canSac = E.canSacrifice(state, myId);
 
   return (
-    <main className="min-h-screen max-w-lg mx-auto pb-28 text-sm">
+    <main className={`min-h-screen max-w-lg mx-auto text-sm ${mode ? "pb-20" : "pb-4"}`}>
       {/* 相手情報 + ターン表示 */}
       <div className="sticky top-0 z-10">
-        <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 p-3">
+        <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2">
           <div className="flex items-center gap-3">
             <div className={`hp-orb opp ${opp.hp <= 3 ? "is-danger" : ""}`}>{opp.hp}</div>
             <div className="flex-1 min-w-0">
@@ -702,8 +878,8 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
                   コスト {opp.cost}/{opp.maxCost}
                 </span>
               </div>
-              <div className="mt-1"><ManaBar cost={opp.cost} max={opp.maxCost} /></div>
-              <div className="text-[11px] text-slate-300 mt-1">
+              <div className="mt-0.5"><ManaBar cost={opp.cost} max={opp.maxCost} /></div>
+              <div className="text-[11px] text-slate-300 mt-0.5">
                 手札 {opp.hand.length} ・ 山 {opp.deck.length} ・{" "}
                 <button onClick={() => setZone("opp")} className="underline text-sky-300">
                   生贄 {opp.sacrifice.length}
@@ -712,14 +888,20 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
             </div>
           </div>
         </div>
-        <div className={`turn-strip ${isMyTurn ? "mine" : "theirs"}`}>
+        <div className={`turn-strip relative ${isMyTurn ? "mine" : "theirs"}`}>
           TURN {state.turnCount}｜{isMyTurn ? "あなた" : oppLabel}の{PHASE_LABEL[phase]}フェーズ
+          <button
+            onClick={() => setConfirmRetire(true)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-2 py-0.5 rounded bg-black/50 border border-white/30 text-white"
+          >
+            リタイア
+          </button>
         </div>
       </div>
 
       {/* 相手の場 */}
-      <div className="p-2 min-h-[110px]">
-        <div className="sme-label mb-1">{oppLabel}の場（右上の i で能力確認）</div>
+      <div className="px-2 py-1">
+        <div className="sme-label mb-0.5">{oppLabel}の場（右上の i で能力確認）</div>
         <div className="flex gap-1 flex-wrap justify-center">
           {opp.field.map((u) => (
             <UnitCard
@@ -747,7 +929,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
 
       {/* 相手プレイヤーへの攻撃 */}
       {ao && (
-        <div className="px-2 pb-2">
+        <div className="px-2 pb-1">
           {ao.face ? (
             <button
               onClick={() => { attack(sel, null, true); setSel(null); }}
@@ -756,7 +938,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
               ⚔ {oppLabel}プレイヤーを攻撃
             </button>
           ) : (
-            <div className="sme-panel py-2 text-center text-[11px] text-slate-400">
+            <div className="sme-panel py-1.5 text-center text-[11px] text-slate-400">
               {ao.defender
                 ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
                 : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
@@ -767,7 +949,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
 
       {/* ログ */}
       <div className="relative sme-log">
-        <div ref={logRef} className="px-3 py-2 text-[10px] h-24 overflow-y-auto space-y-0.5">
+        <div ref={logRef} className="px-3 py-1 text-[10px] h-16 overflow-y-auto space-y-0.5">
           {(state.log || []).slice(-10).map(renderLog)}
         </div>
         <button
@@ -779,8 +961,8 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
       </div>
 
       {/* 自分の場 */}
-      <div className="p-2 min-h-[110px]">
-        <div className="sme-label mb-1">自分の場</div>
+      <div className="px-2 py-1">
+        <div className="sme-label mb-0.5">自分の場</div>
         <div className="flex gap-1 flex-wrap justify-center">
           {me.field.map((u) => (
             <UnitCard
@@ -807,7 +989,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
       </div>
 
       {/* 自分情報 */}
-      <div className="sme-panel sme-panel-me !rounded-none !border-x-0 p-3">
+      <div className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2">
         <div className="flex items-center gap-3">
           <div className={`hp-orb me ${me.hp <= 3 ? "is-danger" : ""}`}>{me.hp}</div>
           <div className="flex-1 min-w-0">
@@ -817,8 +999,8 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
                 コスト {me.cost}/{me.maxCost}
               </span>
             </div>
-            <div className="mt-1"><ManaBar cost={me.cost} max={me.maxCost} /></div>
-            <div className="text-[11px] text-slate-300 mt-1">
+            <div className="mt-0.5"><ManaBar cost={me.cost} max={me.maxCost} /></div>
+            <div className="text-[11px] text-slate-300 mt-0.5">
               山 {me.deck.length} ・{" "}
               <button onClick={() => setZone("me")} className="underline text-sky-300">
                 生贄 {me.sacrifice.length}
@@ -829,9 +1011,9 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
       </div>
 
       {/* 手札 */}
-      <div className="px-2 pt-2">
-        <div className="sme-label mb-1">手札 ({me.hand.length})</div>
-        <div className="flex gap-2 overflow-x-auto pt-3 pb-3 px-1">
+      <div className="px-2 pt-1">
+        <div className="sme-label">手札 ({me.hand.length})</div>
+        <div className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
           {me.hand.map((h, i) => {
             const c = E.handInfo(h);
             if (!c) {
@@ -869,8 +1051,8 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
                     <span>{cost}</span>
                   </span>
                 </div>
-                <div className="text-[11px] font-bold leading-tight mt-2 text-white">{c.name}</div>
-                <div className="mt-2">
+                <div className="text-[11px] font-bold leading-tight mt-1 text-white">{c.name}</div>
+                <div className="mt-1">
                   {c.type === "magic" ? (
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-900/80 border border-sky-400/40 text-sky-100">
                       MAGIC
@@ -886,46 +1068,41 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
       </div>
 
       {/* 操作 */}
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-2">
         <PhaseBar phase={phase} mine={isMyTurn} />
 
         {!isMyTurn && (
-          <div className="sme-panel py-3 text-center text-slate-300 text-xs animate-pulse">
+          <div className="sme-panel py-2 text-center text-slate-300 text-xs animate-pulse">
             {isCpu ? "CPUが考えています…" : `相手の${PHASE_LABEL[phase]}フェーズ中です…`}
           </div>
         )}
 
         {isMyTurn && phase === "draw" && (
-          <button onClick={() => run(E.drawStep(state, myId))} className="sme-btn sme-btn-sun sme-glow">
+          <button onClick={() => run(E.drawStep(state, myId))} className="sme-btn sme-btn-sun sme-glow !py-2.5">
             カードを引く（山札 {me.deck.length}枚）
           </button>
         )}
 
         {isMyTurn && phase === "main" && (
-          <>
-            <div className="text-[11px] text-slate-400 mb-2 text-center">
-              カードの使用・攻撃ができます
-            </div>
-            <button
-              disabled={!!mode}
-              onClick={() => { setSel(null); run(E.toSacrifice(state, myId)); }}
-              className="sme-btn sme-btn-sun"
-            >
-              メインフェーズ終了 → 生贄フェーズへ
-            </button>
-          </>
+          <button
+            disabled={!!mode}
+            onClick={() => { setSel(null); run(E.toSacrifice(state, myId)); }}
+            className="sme-btn sme-btn-sun !py-2.5"
+          >
+            メインフェーズ終了 → 生贄フェーズへ
+          </button>
         )}
 
         {isMyTurn && phase === "sacrifice" && (
           <>
-            <div className="text-[11px] text-slate-400 mb-2 text-center">
+            <div className="text-[11px] text-slate-400 mb-1 text-center">
               {me.sacrificedThisTurn
                 ? "このターンは生贄済みです"
                 : me.maxCost >= E.MAX_COST
                   ? "コスト上限のため生贄できません"
                   : "手札をタップして生贄にできます（任意・1回まで）"}
             </div>
-            <button onClick={() => run(E.endTurn(state, myId))} className="sme-btn sme-btn-moon">
+            <button onClick={() => run(E.endTurn(state, myId))} className="sme-btn sme-btn-moon !py-2.5">
               {me.sacrificedThisTurn ? "ターン終了" : "生贄せずにターン終了"}
             </button>
           </>
@@ -1034,6 +1211,15 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
             run(E.sacrifice(state, myId, idx));
           }}
           canSac={canSac}
+        />
+      )}
+
+      {/* リタイア確認 */}
+      {confirmRetire && (
+        <RetireConfirm
+          isCpu={isCpu}
+          onNo={() => setConfirmRetire(false)}
+          onYes={() => { setConfirmRetire(false); onRetire && onRetire(); }}
         />
       )}
     </main>
@@ -1197,7 +1383,7 @@ function UnitCard({ u, foe, selected, targetable, ready, flash, onTap, onInfo })
           </span>
         )}
         <div className="unit-name">{u.name}</div>
-        <div className="flex justify-between items-end mt-2">
+        <div className="flex justify-between items-end mt-1">
           <span className={`unit-stat ${statCls}`}>{u.stat}</span>
           <div className="flex flex-col gap-0.5 items-end">
             {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
