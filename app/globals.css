@@ -96,36 +96,30 @@ html::after {
   50%      { transform: scale(0.98); opacity: 0.75; }
 }
 
-/* 地球：手札の上あたりに見える、大きな惑星の縁（大気の光） */
+/* 地球：手札の上あたりに、横長にぼんやり広がる緑の光（線・影なし） */
 body::after {
   content: "";
   position: fixed;
-  width: 260vmax;
-  height: 260vmax;
+  width: 150vmax;
+  height: 56vh;
   left: 50%;
-  top: 70vh;
-  border-radius: 50%;
+  top: 42vh; /* 光の中心が画面の約70%の高さに来る */
   pointer-events: none;
   z-index: 0;
-  /* 惑星の本体（ほんのり暗い影） */
   background:
-    radial-gradient(circle at 50% 0%,
-      rgba(40, 120, 95, 0.12) 0%,
-      rgba(8, 28, 26, 0.3) 3%,
-      rgba(4, 10, 14, 0.35) 12%,
-      transparent 30%);
-  /* 大気の縁の光 */
-  box-shadow:
-    0 0 50px 6px rgba(63, 224, 160, 0.12),
-    inset 0 10px 34px rgba(63, 224, 160, 0.14);
-  border-top: 1px solid rgba(120, 240, 190, 0.18);
+    radial-gradient(ellipse 50% 50% at 50% 50%,
+      rgba(200, 255, 230, 0.12) 0%,
+      rgba(63, 224, 160, 0.13) 14%,
+      rgba(40, 190, 130, 0.08) 30%,
+      rgba(20, 120, 90, 0.03) 48%,
+      transparent 70%);
   transform: translateX(-50%);
   animation: smeEarthPulse 14s ease-in-out infinite;
-  will-change: opacity;
+  will-change: transform, opacity;
 }
 @keyframes smeEarthPulse {
-  0%, 100% { opacity: 0.75; }
-  50%      { opacity: 1; }
+  0%, 100% { transform: translateX(-50%) scale(1);    opacity: 0.8; }
+  50%      { transform: translateX(-50%) scale(1.05); opacity: 1; }
 }
 
 body {
