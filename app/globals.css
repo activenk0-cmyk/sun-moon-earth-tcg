@@ -562,4 +562,106 @@ body > * { position: relative; z-index: 1; }
 }
 .turn-strip.theirs {
   color: #e3dcff;
-  background: linear-gradient(90deg, #1c1840, #3a3470,
+  background: linear-gradient(90deg, #1c1840, #3a3470, #1c1840);
+}
+
+.phase-step {
+  flex: 1;
+  text-align: center;
+  font-size: 10px;
+  padding: 3px 0;
+  border-radius: 8px;
+  color: #6f6a90;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.phase-step.on {
+  font-weight: 900;
+  color: #3a2204;
+  background: linear-gradient(160deg, #fff0c0, #f5b642 50%, #b8780f);
+  border-color: #fff0c0;
+  box-shadow: 0 0 12px rgba(245, 182, 66, 0.6);
+}
+.phase-step.on.theirs {
+  color: #fff;
+  background: linear-gradient(160deg, #5a55a8, #2c2780);
+  border-color: #aab2ff;
+  box-shadow: 0 0 10px rgba(154, 166, 255, 0.45);
+}
+
+/* ============================================================
+   ターン切り替えバナー
+   ============================================================ */
+.turn-banner {
+  padding: 18px 34px;
+  border-radius: 16px;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  animation: smeBanner 1.6s ease both;
+}
+.turn-banner.mine {
+  color: #3a2204;
+  background: linear-gradient(160deg, #fff0c0, #f5b642 45%, #b8780f);
+  border: 2px solid #fff4d0;
+  box-shadow: 0 0 40px rgba(245, 182, 66, 0.8), 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+.turn-banner.theirs {
+  color: #fff;
+  background: linear-gradient(160deg, #5a55a8, #2c2780 45%, #140f3d);
+  border: 2px solid #aab2ff;
+  box-shadow: 0 0 40px rgba(154, 166, 255, 0.7), 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+@keyframes smeBanner {
+  0%   { transform: scale(0.6); opacity: 0; letter-spacing: 0.4em; }
+  18%  { transform: scale(1.08); opacity: 1; letter-spacing: 0.12em; }
+  28%  { transform: scale(1); }
+  80%  { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.05); opacity: 0; }
+}
+
+/* ============================================================
+   モーダル
+   ============================================================ */
+.sme-sheet {
+  background: linear-gradient(160deg, #1d1742, #120e2a);
+  border-top: 1px solid rgba(232, 200, 116, 0.4);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(106, 47, 184, 0.25);
+}
+.sme-modal {
+  background: linear-gradient(160deg, #1d1742, #241f48);
+  border: 1px solid rgba(232, 200, 116, 0.35);
+  box-shadow: 0 0 44px rgba(106, 47, 184, 0.45);
+}
+
+/* ============================================================
+   決着画面
+   ============================================================ */
+.result-title {
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  font-size: 52px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  animation: smeResult 0.9s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.result-title.win {
+  color: #ffd700;
+  text-shadow: 0 0 30px rgba(255, 215, 0, 0.85), 0 0 70px rgba(255, 215, 0, 0.4);
+}
+.result-title.lose {
+  color: #cf7a86;
+  text-shadow: 0 0 30px rgba(200, 100, 120, 0.75);
+}
+@keyframes smeResult {
+  0% { transform: scale(2.2); opacity: 0; filter: blur(8px); }
+  100% { transform: scale(1); opacity: 1; filter: blur(0); }
+}
+
+/* ============================================================
+   ログ
+   ============================================================ */
+.sme-log {
+  background: rgba(6, 5, 16, 0.6);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
