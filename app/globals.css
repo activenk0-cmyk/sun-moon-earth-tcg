@@ -2,8 +2,578 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   SUN / MOON / EARTH  - ダークファンタジー テーマ
+   ============================================================ */
+:root {
+  --sun: #f5b642;
+  --sun-deep: #b8660f;
+  --moon: #9aa6ff;
+  --moon-deep: #4b3fb8;
+  --earth: #3fe0a0;
+  --earth-deep: #0f7a52;
+  --gold: #e8c874;
+  --gold-deep: #8a6414;
+  --ink: #07061a;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(60% 40% at 8% 0%, rgba(245, 158, 11, 0.22), transparent 70%),
+    radial-gradient(55% 40% at 96% 12%, rgba(129, 140, 248, 0.26), transparent 70%),
+    radial-gradient(75% 45% at 50% 108%, rgba(52, 211, 153, 0.2), transparent 70%),
+    linear-gradient(180deg, #0c0a22 0%, #080716 55%, #05040c 100%);
+  background-attachment: fixed;
+  background-color: #05040c;
+}
+
 body {
-  background: #0f172a;
-  color: #e2e8f0;
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  color: #ece6ff;
+  min-height: 100vh;
+  background: transparent;
+  overflow-x: hidden;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* 星空（ゆっくり瞬く） */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(1px 1px at 20px 30px, #fff, transparent),
+    radial-gradient(1px 1px at 90px 120px, rgba(255, 255, 255, 0.8), transparent),
+    radial-gradient(1.5px 1.5px at 150px 60px, rgba(255, 240, 200, 0.9), transparent),
+    radial-gradient(1px 1px at 60px 170px, rgba(200, 210, 255, 0.8), transparent),
+    radial-gradient(1.5px 1.5px at 180px 190px, #fff, transparent),
+    radial-gradient(1px 1px at 120px 20px, rgba(190, 255, 225, 0.8), transparent);
+  background-size: 200px 200px;
+  opacity: 0.45;
+  animation: smeTwinkle 7s ease-in-out infinite;
+}
+@keyframes smeTwinkle {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.6; }
+}
+
+/* 画面の中身は星空より手前に */
+body > * { position: relative; z-index: 1; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(232, 200, 116, 0.35); border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================
+   タイトル
+   ============================================================ */
+.sme-title {
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  line-height: 1.15;
+  background: linear-gradient(175deg, #ffffff 0%, #f3e3b0 35%, #c9a24a 65%, #fff4d0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter:
+    drop-shadow(0 3px 3px rgba(0, 0, 0, 0.85))
+    drop-shadow(0 0 14px rgba(232, 200, 116, 0.45));
+}
+.sme-title-line {
+  height: 2px;
+  width: 72%;
+  margin: 10px auto 0;
+  background: linear-gradient(90deg, transparent, var(--sun), var(--moon), var(--earth), transparent);
+  box-shadow: 0 0 12px rgba(232, 200, 116, 0.5);
+}
+.sme-sub {
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  letter-spacing: 0.4em;
+  color: #d6ccf5;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8), 0 0 10px rgba(154, 166, 255, 0.35);
+}
+.sme-heading {
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #fff3d0;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8), 0 0 12px rgba(232, 200, 116, 0.35);
+}
+
+/* 3つの紋章（タイトル画面の飾り） */
+.sme-emblems { display: flex; justify-content: center; gap: 18px; }
+.sme-emblem {
+  width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 900;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  animation: smeFloat 3.6s ease-in-out infinite;
+}
+.sme-emblem.sun  { background: radial-gradient(circle at 35% 30%, #fff3c4, var(--sun) 45%, var(--sun-deep)); box-shadow: 0 0 22px rgba(245, 182, 66, 0.7); color: #3a2204; }
+.sme-emblem.moon { background: radial-gradient(circle at 35% 30%, #eef0ff, var(--moon) 45%, var(--moon-deep)); box-shadow: 0 0 22px rgba(154, 166, 255, 0.7); color: #140f3d; animation-delay: 0.6s; }
+.sme-emblem.earth{ background: radial-gradient(circle at 35% 30%, #e0fff2, var(--earth) 45%, var(--earth-deep)); box-shadow: 0 0 22px rgba(63, 224, 160, 0.7); color: #03281a; animation-delay: 1.2s; }
+@keyframes smeFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+/* ============================================================
+   パネル
+   ============================================================ */
+.sme-panel {
+  background: linear-gradient(160deg, rgba(34, 28, 70, 0.78), rgba(12, 10, 28, 0.86));
+  border: 1px solid rgba(232, 200, 116, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(4px);
+}
+.sme-panel-opp {
+  background: linear-gradient(160deg, rgba(70, 20, 40, 0.55), rgba(14, 10, 26, 0.86));
+  border-color: rgba(230, 110, 130, 0.3);
+}
+.sme-panel-me {
+  background: linear-gradient(160deg, rgba(16, 60, 50, 0.55), rgba(10, 12, 26, 0.86));
+  border-color: rgba(63, 224, 160, 0.28);
+}
+.sme-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #b8a9ec;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+/* ============================================================
+   ボタン
+   ============================================================ */
+.sme-btn {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 14px 12px;
+  border-radius: 12px;
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #fff4dc;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(232, 200, 116, 0.45);
+  background: linear-gradient(160deg, #3a3470, #1c1840);
+  box-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.5),
+    0 6px 14px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  transition: transform 0.14s ease, filter 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease;
+}
+.sme-btn::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 45%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent);
+  pointer-events: none;
+}
+.sme-btn:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-2px); }
+.sme-btn:active:not(:disabled) { transform: translateY(2px) scale(0.99); box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.4); }
+.sme-btn:disabled { opacity: 0.32; filter: grayscale(40%); cursor: not-allowed; }
+
+.sme-btn-sun {
+  background: radial-gradient(130% 180% at 25% -20%, rgba(255, 235, 180, 0.2), transparent 55%),
+              linear-gradient(160deg, #b8780f 0%, #7a4a08 45%, #3a2204 100%);
+  border-color: #f0cf7a;
+}
+.sme-btn-moon {
+  background: radial-gradient(130% 180% at 25% -20%, rgba(210, 215, 255, 0.18), transparent 55%),
+              linear-gradient(160deg, #4b47b8 0%, #2c2780 45%, #140f3d 100%);
+  border-color: #aab2ff;
+}
+.sme-btn-earth {
+  background: radial-gradient(130% 180% at 25% -20%, rgba(190, 255, 225, 0.16), transparent 55%),
+              linear-gradient(160deg, #148a5c 0%, #0b5238 45%, #03281a 100%);
+  border-color: #7ae8bd;
+}
+.sme-btn-danger {
+  background: radial-gradient(130% 180% at 25% -20%, rgba(255, 200, 210, 0.16), transparent 55%),
+              linear-gradient(160deg, #a3223f 0%, #6a1228 45%, #300510 100%);
+  border-color: #e6a0ae;
+}
+.sme-btn-ghost {
+  color: #dcdce8;
+  background: linear-gradient(160deg, #4a4a58, #22222c);
+  border-color: rgba(200, 200, 215, 0.35);
+}
+.sme-btn-sm { padding: 8px 10px; font-size: 12px; border-radius: 10px; }
+
+/* 準備完了ボタンをゆっくり光らせる */
+.sme-glow { animation: smeBtnGlow 1.8s ease-in-out infinite; }
+@keyframes smeBtnGlow {
+  0%, 100% { box-shadow: 0 4px 0 rgba(0,0,0,0.5), 0 0 8px rgba(232, 200, 116, 0.35); }
+  50%      { box-shadow: 0 4px 0 rgba(0,0,0,0.5), 0 0 24px rgba(232, 200, 116, 0.85); }
+}
+
+/* ============================================================
+   陣営カラー（カード枠・文字）
+   ============================================================ */
+.fx-sun   { --fx: var(--sun);   --fx-deep: var(--sun-deep);   --fx-rgb: 245, 182, 66; }
+.fx-moon  { --fx: var(--moon);  --fx-deep: var(--moon-deep);  --fx-rgb: 154, 166, 255; }
+.fx-earth { --fx: var(--earth); --fx-deep: var(--earth-deep); --fx-rgb: 63, 224, 160; }
+.fx-none  { --fx: #9aa0b8;      --fx-deep: #3a3e52;           --fx-rgb: 154, 160, 184; }
+
+.fx-text { color: var(--fx); text-shadow: 0 0 8px rgba(var(--fx-rgb), 0.5); }
+
+/* ============================================================
+   デッキ構築のカード選択
+   ============================================================ */
+.pick-card {
+  position: relative;
+  padding: 8px;
+  border-radius: 10px;
+  text-align: left;
+  border: 2px solid rgba(var(--fx-rgb), 0.25);
+  background: linear-gradient(165deg, rgba(var(--fx-rgb), 0.12), rgba(10, 8, 24, 0.9) 60%);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.pick-card:active { transform: scale(0.97); }
+.pick-card.is-on {
+  border-color: var(--fx);
+  background: linear-gradient(165deg, rgba(var(--fx-rgb), 0.32), rgba(10, 8, 24, 0.9) 70%);
+  box-shadow: 0 0 16px rgba(var(--fx-rgb), 0.6), inset 0 0 12px rgba(var(--fx-rgb), 0.25);
+}
+
+/* ============================================================
+   場のユニット
+   ============================================================ */
+.unit {
+  position: relative;
+  width: 68px;
+  min-height: 84px;
+  padding: 5px 5px 4px;
+  border-radius: 10px;
+  text-align: left;
+  border: 2px solid rgba(var(--fx-rgb), 0.7);
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(var(--fx-rgb), 0.28), transparent 65%),
+    linear-gradient(170deg, #1d1838 0%, #0c0a1c 100%);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease, filter 0.2s ease;
+}
+.unit::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 40%);
+  pointer-events: none;
+}
+.unit-name {
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.15;
+  height: 22px;
+  overflow: hidden;
+  color: #f4efff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.unit-stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 900;
+  color: #fff;
+  background: radial-gradient(circle at 35% 30%, #ffffff55, var(--fx) 40%, var(--fx-deep));
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 10px rgba(var(--fx-rgb), 0.6);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+.unit-stat.is-up   { background: radial-gradient(circle at 35% 30%, #ffffff66, #3fe0a0 40%, #0f7a52); }
+.unit-stat.is-down { background: radial-gradient(circle at 35% 30%, #ffffff55, #ff6b7d 40%, #8a1228); }
+
+.unit-kw {
+  font-size: 8px;
+  font-weight: 800;
+  padding: 1px 3px;
+  border-radius: 4px;
+  line-height: 1.2;
+  color: #fff;
+}
+.unit-kw.def { background: #2f5fd0; }
+.unit-kw.inv { background: #b08a10; }
+.unit-kw.evd { background: #7b3fc4; }
+.unit-kw.rsh { background: #a3223f; }
+
+.unit.is-foe { border-color: rgba(var(--fx-rgb), 0.55); }
+.unit.is-attacked { opacity: 0.5; filter: grayscale(55%); }
+
+/* 攻撃できる自軍キャラ：緑のほわほわオーラ */
+.unit.is-ready { animation: smeReady 2s ease-in-out infinite; }
+@keyframes smeReady {
+  0%, 100% { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 5px rgba(78, 222, 122, 0.35); }
+  50%      { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 20px rgba(78, 222, 122, 0.85), 0 0 34px rgba(78, 222, 122, 0.3); }
+}
+/* 選択中 */
+.unit.is-selected {
+  transform: translateY(-6px) scale(1.06);
+  border-color: #ffd700;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.6), 0 0 26px rgba(255, 215, 0, 0.8);
+  z-index: 5;
+}
+/* 対象として選べる */
+.unit.is-target { animation: smeTarget 0.9s ease-in-out infinite; border-color: #7fd4ff; }
+@keyframes smeTarget {
+  0%, 100% { box-shadow: 0 0 6px rgba(127, 212, 255, 0.5); transform: scale(1); }
+  50%      { box-shadow: 0 0 22px rgba(127, 212, 255, 1); transform: scale(1.05); }
+}
+/* 相手の行動で変化したキャラ */
+.unit.is-flash { animation: smeFlash 0.6s ease-in-out infinite; }
+@keyframes smeFlash {
+  0%, 100% { box-shadow: 0 0 6px rgba(255, 90, 120, 0.5); }
+  50%      { box-shadow: 0 0 26px rgba(255, 90, 120, 1); }
+}
+
+/* 召喚演出（場に出た瞬間に1回だけ再生） */
+.unit-enter { animation: smeSummon 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+@keyframes smeSummon {
+  0%   { transform: translateY(-40px) scale(1.6); opacity: 0; filter: brightness(3); }
+  60%  { transform: translateY(2px) scale(0.96); opacity: 1; filter: brightness(1.6); }
+  100% { transform: translateY(0) scale(1); opacity: 1; filter: brightness(1); }
+}
+
+/* 空き枠 */
+.unit-slot {
+  width: 68px;
+  min-height: 84px;
+  border-radius: 10px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ============================================================
+   手札
+   ============================================================ */
+.hand-card {
+  position: relative;
+  width: 96px;
+  min-height: 118px;
+  padding: 6px;
+  border-radius: 10px;
+  text-align: left;
+  border: 2px solid rgba(var(--fx-rgb), 0.6);
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(var(--fx-rgb), 0.3), transparent 65%),
+    linear-gradient(170deg, #1e1a3c 0%, #0b0a1a 100%);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.2s ease;
+}
+.hand-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 40%);
+  pointer-events: none;
+}
+.hand-card.is-playable { animation: smeHandGlow 2.2s ease-in-out infinite; }
+@keyframes smeHandGlow {
+  0%, 100% { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 6px rgba(var(--fx-rgb), 0.4); }
+  50%      { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 22px rgba(var(--fx-rgb), 0.95), 0 0 38px rgba(var(--fx-rgb), 0.35); }
+}
+.hand-card.is-playable:hover { transform: translateY(-8px) scale(1.04); }
+.hand-card.is-dim { opacity: 0.45; filter: grayscale(35%); }
+.hand-card.is-target { border-color: #7fd4ff; animation: smeTarget 0.9s ease-in-out infinite; }
+
+.cost-gem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #fff;
+  transform: rotate(45deg);
+  border-radius: 5px;
+  background: linear-gradient(135deg, #c9d2ff, #6b5cff 55%, #2a1f7a);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 8px rgba(122, 95, 255, 0.7);
+}
+.cost-gem > span { transform: rotate(-45deg); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+.cost-gem.is-down { background: linear-gradient(135deg, #d6ffe9, #3fe0a0 55%, #0f7a52); box-shadow: 0 0 8px rgba(63, 224, 160, 0.8); }
+
+/* ============================================================
+   HP・マナ
+   ============================================================ */
+.hp-orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 52px;
+  padding: 0 6px;
+  border-radius: 50%;
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.9);
+}
+.hp-orb.me  { background: radial-gradient(circle at 35% 30%, #d6ffe9, #3fe0a0 35%, #0f7a52 75%, #03281a); box-shadow: 0 0 18px rgba(63, 224, 160, 0.6); }
+.hp-orb.opp { background: radial-gradient(circle at 35% 30%, #ffd6dc, #ff5c74 35%, #8a1228 75%, #300510); box-shadow: 0 0 18px rgba(255, 92, 116, 0.6); }
+.hp-orb.is-danger { animation: smeDanger 0.9s ease-in-out infinite; }
+@keyframes smeDanger {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); filter: brightness(1.25); }
+}
+
+.mana-row { display: flex; flex-wrap: wrap; gap: 3px; }
+.mana-dot {
+  width: 12px;
+  height: 12px;
+  transform: rotate(45deg);
+  border-radius: 3px;
+  border: 1px solid rgba(154, 116, 255, 0.35);
+  background: rgba(10, 6, 22, 0.85);
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.8);
+}
+.mana-dot.on {
+  border-color: #d8caff;
+  background: linear-gradient(135deg, #ffffff 0%, #d9c8ff 20%, #7a5fff 60%, #2f1f70 100%);
+  box-shadow: 0 0 8px rgba(154, 116, 255, 0.8);
+}
+.mana-dot.used {
+  border-color: rgba(154, 116, 255, 0.5);
+  background: linear-gradient(135deg, #4a3f7a, #211a40);
+}
+
+/* ============================================================
+   ターン・フェーズ表示
+   ============================================================ */
+.turn-strip {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  padding: 5px 8px;
+}
+.turn-strip.mine {
+  color: #3a2204;
+  background: linear-gradient(90deg, #8a5a08, #f5b642, #fff0c0, #f5b642, #8a5a08);
+  box-shadow: 0 0 16px rgba(245, 182, 66, 0.5);
+}
+.turn-strip.theirs {
+  color: #e3dcff;
+  background: linear-gradient(90deg, #1c1840, #3a3470, #1c1840);
+}
+
+.phase-step {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  padding: 5px 0;
+  border-radius: 8px;
+  color: #6f6a90;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.phase-step.on {
+  font-weight: 900;
+  color: #3a2204;
+  background: linear-gradient(160deg, #fff0c0, #f5b642 50%, #b8780f);
+  border-color: #fff0c0;
+  box-shadow: 0 0 12px rgba(245, 182, 66, 0.6);
+}
+.phase-step.on.theirs {
+  color: #fff;
+  background: linear-gradient(160deg, #5a55a8, #2c2780);
+  border-color: #aab2ff;
+  box-shadow: 0 0 10px rgba(154, 166, 255, 0.45);
+}
+
+/* ============================================================
+   ターン切り替えバナー
+   ============================================================ */
+.turn-banner {
+  padding: 18px 34px;
+  border-radius: 16px;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  animation: smeBanner 1.6s ease both;
+}
+.turn-banner.mine {
+  color: #3a2204;
+  background: linear-gradient(160deg, #fff0c0, #f5b642 45%, #b8780f);
+  border: 2px solid #fff4d0;
+  box-shadow: 0 0 40px rgba(245, 182, 66, 0.8), 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+.turn-banner.theirs {
+  color: #fff;
+  background: linear-gradient(160deg, #5a55a8, #2c2780 45%, #140f3d);
+  border: 2px solid #aab2ff;
+  box-shadow: 0 0 40px rgba(154, 166, 255, 0.7), 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+@keyframes smeBanner {
+  0%   { transform: scale(0.6); opacity: 0; letter-spacing: 0.4em; }
+  18%  { transform: scale(1.08); opacity: 1; letter-spacing: 0.12em; }
+  28%  { transform: scale(1); }
+  80%  { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.05); opacity: 0; }
+}
+
+/* ============================================================
+   モーダル
+   ============================================================ */
+.sme-sheet {
+  background: linear-gradient(160deg, #1d1742, #120e2a);
+  border-top: 1px solid rgba(232, 200, 116, 0.4);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(106, 47, 184, 0.25);
+}
+.sme-modal {
+  background: linear-gradient(160deg, #1d1742, #241f48);
+  border: 1px solid rgba(232, 200, 116, 0.35);
+  box-shadow: 0 0 44px rgba(106, 47, 184, 0.45);
+}
+
+/* ============================================================
+   決着画面
+   ============================================================ */
+.result-title {
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  font-size: 52px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  animation: smeResult 0.9s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.result-title.win {
+  color: #ffd700;
+  text-shadow: 0 0 30px rgba(255, 215, 0, 0.85), 0 0 70px rgba(255, 215, 0, 0.4);
+}
+.result-title.lose {
+  color: #cf7a86;
+  text-shadow: 0 0 30px rgba(200, 100, 120, 0.75);
+}
+@keyframes smeResult {
+  0% { transform: scale(2.2); opacity: 0; filter: blur(8px); }
+  100% { transform: scale(1); opacity: 1; filter: blur(0); }
+}
+
+/* ============================================================
+   ログ
+   ============================================================ */
+.sme-log {
+  background: rgba(6, 5, 16, 0.6);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
