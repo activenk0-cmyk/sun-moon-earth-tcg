@@ -719,13 +719,14 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
 
       {/* 相手の場 */}
       <div className="p-2 min-h-[110px]">
-        <div className="sme-label mb-1">{oppLabel}の場</div>
+        <div className="sme-label mb-1">{oppLabel}の場（右上の i で能力確認）</div>
         <div className="flex gap-1 flex-wrap justify-center">
           {opp.field.map((u) => (
             <UnitCard
               key={u.uid} u={u} foe
               flash={flashIds.includes(u.uid)}
               targetable={oppTargetable(u)}
+              onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
                   if (mode !== "reduce1" && mode !== "reattack") resolveTarget(u.uid);
@@ -787,6 +788,7 @@ function GameScreen({ state, myId, room, apply, detail, setDetail, cpuDeck, onRe
               flash={flashIds.includes(u.uid)}
               targetable={mode === "reattack" && candidates.includes(u.uid)}
               ready={canMain && u.canAttack && !u.attacked}
+              onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
                   if (mode === "reattack") resolveTarget(u.uid);
@@ -1161,7 +1163,7 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
 }
 
 /* ============ ユニット表示 ============ */
-function UnitCard({ u, foe, selected, targetable, ready, flash, onTap }) {
+function UnitCard({ u, foe, selected, targetable, ready, flash, onTap, onInfo }) {
   const info = E.unitInfo(u);
   const base = info?.stat;
   const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
@@ -1183,6 +1185,17 @@ function UnitCard({ u, foe, selected, targetable, ready, flash, onTap }) {
   return (
     <div className="unit-enter">
       <button onClick={onTap} className={cls}>
+        {/* 能力確認ボタン（タップしても選択・攻撃はしない） */}
+        {onInfo && (
+          <span
+            role="button"
+            aria-label="能力を見る"
+            onClick={(e) => { e.stopPropagation(); onInfo(); }}
+            className="absolute -top-2 -right-2 z-10 w-5 h-5 rounded-full bg-sky-600 border border-white/70 text-[10px] font-bold text-white flex items-center justify-center shadow-lg"
+          >
+            i
+          </span>
+        )}
         <div className="unit-name">{u.name}</div>
         <div className="flex justify-between items-end mt-2">
           <span className={`unit-stat ${statCls}`}>{u.stat}</span>
