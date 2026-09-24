@@ -41,7 +41,7 @@ html {
 }
 
 /* ============================================================
-   天体の光（画面の端だけ・操作の邪魔をしない）
+   天体の光（操作の邪魔をしない・タップは素通り）
    ============================================================ */
 
 /* 太陽：左上の角から差し込む光 */
@@ -96,30 +96,33 @@ html::after {
   50%      { transform: scale(0.98); opacity: 0.75; }
 }
 
-/* 地球：手札の上あたりに、横長にぼんやり広がる緑の光（線・影なし） */
+/* 地球：自分のコスト表示の少し左あたりに、丸くぼんやり光る */
 body::after {
   content: "";
   position: fixed;
-  width: 150vmax;
-  height: 56vh;
-  left: 50%;
-  top: 42vh; /* 光の中心が画面の約70%の高さに来る */
+  width: 44vmax;
+  height: 44vmax;
+  /* 横：画面中央から右寄り（コスト表示の少し左） */
+  left: calc(50% + min(26vw, 140px));
+  /* 縦：画面の上から約55%（自分の情報パネルのあたり） */
+  top: 55vh;
+  border-radius: 50%;
   pointer-events: none;
   z-index: 0;
   background:
-    radial-gradient(ellipse 50% 50% at 50% 50%,
-      rgba(200, 255, 230, 0.12) 0%,
-      rgba(63, 224, 160, 0.13) 14%,
-      rgba(40, 190, 130, 0.08) 30%,
-      rgba(20, 120, 90, 0.03) 48%,
-      transparent 70%);
-  transform: translateX(-50%);
+    radial-gradient(circle at 50% 50%,
+      rgba(220, 255, 238, 0.2) 0%,
+      rgba(120, 240, 190, 0.16) 12%,
+      rgba(63, 224, 160, 0.1) 28%,
+      rgba(20, 150, 100, 0.04) 44%,
+      transparent 64%);
+  transform: translate(-50%, -50%);
   animation: smeEarthPulse 14s ease-in-out infinite;
   will-change: transform, opacity;
 }
 @keyframes smeEarthPulse {
-  0%, 100% { transform: translateX(-50%) scale(1);    opacity: 0.8; }
-  50%      { transform: translateX(-50%) scale(1.05); opacity: 1; }
+  0%, 100% { transform: translate(-50%, -50%) scale(1);    opacity: 0.8; }
+  50%      { transform: translate(-50%, -50%) scale(1.06); opacity: 1; }
 }
 
 body {
@@ -131,7 +134,7 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* 星空（2種類の星を重ねて、ゆっくり瞬く） */
+/* 星空（数を増やして明るく。2種類の大きさ・ゆっくり瞬く） */
 body::before {
   content: "";
   position: fixed;
@@ -140,25 +143,29 @@ body::before {
   z-index: 0;
   background-image:
     /* 小さい星（細かく多め） */
-    radial-gradient(1px 1px at 20px 30px, #fff, transparent),
-    radial-gradient(1px 1px at 90px 120px, rgba(255, 255, 255, 0.8), transparent),
-    radial-gradient(1px 1px at 60px 170px, rgba(200, 210, 255, 0.8), transparent),
-    radial-gradient(1px 1px at 120px 20px, rgba(190, 255, 225, 0.8), transparent),
-    radial-gradient(1px 1px at 170px 95px, rgba(255, 255, 255, 0.7), transparent),
-    radial-gradient(1px 1px at 35px 110px, rgba(220, 225, 255, 0.7), transparent),
-    /* 大きめの星（まばら） */
-    radial-gradient(1.6px 1.6px at 150px 60px, rgba(255, 240, 200, 0.95), transparent),
-    radial-gradient(1.6px 1.6px at 240px 210px, #fff, transparent),
-    radial-gradient(2px 2px at 310px 80px, rgba(200, 215, 255, 0.95), transparent);
+    radial-gradient(1.2px 1.2px at 20px 30px, #fff, transparent),
+    radial-gradient(1.2px 1.2px at 90px 120px, #fff, transparent),
+    radial-gradient(1.2px 1.2px at 60px 170px, rgba(210, 220, 255, 1), transparent),
+    radial-gradient(1.2px 1.2px at 120px 20px, rgba(200, 255, 230, 1), transparent),
+    radial-gradient(1.2px 1.2px at 170px 95px, #fff, transparent),
+    radial-gradient(1.2px 1.2px at 35px 110px, rgba(230, 232, 255, 1), transparent),
+    radial-gradient(1.2px 1.2px at 140px 150px, rgba(255, 245, 220, 1), transparent),
+    radial-gradient(1.2px 1.2px at 185px 45px, #fff, transparent),
+    /* 大きめの明るい星（まばら・ふんわりにじむ） */
+    radial-gradient(2.2px 2.2px at 150px 60px, rgba(255, 244, 210, 1), rgba(255, 230, 170, 0.25) 60%, transparent),
+    radial-gradient(2.2px 2.2px at 240px 210px, #fff, rgba(220, 225, 255, 0.25) 60%, transparent),
+    radial-gradient(2.6px 2.6px at 310px 80px, rgba(215, 225, 255, 1), rgba(170, 180, 255, 0.3) 60%, transparent),
+    radial-gradient(2.2px 2.2px at 60px 290px, rgba(210, 255, 235, 1), rgba(150, 240, 200, 0.25) 60%, transparent);
   background-size:
-    200px 200px, 200px 200px, 200px 200px, 200px 200px, 200px 200px, 200px 200px,
-    340px 340px, 340px 340px, 340px 340px;
-  opacity: 0.5;
-  animation: smeTwinkle 8s ease-in-out infinite;
+    200px 200px, 200px 200px, 200px 200px, 200px 200px,
+    200px 200px, 200px 200px, 200px 200px, 200px 200px,
+    340px 340px, 340px 340px, 340px 340px, 340px 340px;
+  opacity: 0.85;
+  animation: smeTwinkle 7s ease-in-out infinite;
 }
 @keyframes smeTwinkle {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.7; }
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
 }
 
 /* 動きを減らす設定の端末ではアニメーションを止める */
