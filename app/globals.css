@@ -249,13 +249,13 @@ body > * { position: relative; z-index: 1; }
 }
 
 /* ============================================================
-   場のユニット
+   場のユニット（コンパクト版）
    ============================================================ */
 .unit {
   position: relative;
   width: 68px;
-  min-height: 84px;
-  padding: 5px 5px 4px;
+  min-height: 72px;
+  padding: 4px 5px 3px;
   border-radius: 10px;
   text-align: left;
   border: 2px solid rgba(var(--fx-rgb), 0.7);
@@ -277,7 +277,7 @@ body > * { position: relative; z-index: 1; }
   font-size: 9px;
   font-weight: 800;
   line-height: 1.15;
-  height: 22px;
+  height: 21px;
   overflow: hidden;
   color: #f4efff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
@@ -286,11 +286,11 @@ body > * { position: relative; z-index: 1; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 26px;
-  height: 26px;
+  min-width: 24px;
+  height: 24px;
   padding: 0 4px;
   border-radius: 50%;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
   color: #fff;
   background: radial-gradient(circle at 35% 30%, #ffffff55, var(--fx) 40%, var(--fx-deep));
@@ -325,7 +325,7 @@ body > * { position: relative; z-index: 1; }
 }
 /* 選択中 */
 .unit.is-selected {
-  transform: translateY(-6px) scale(1.06);
+  transform: translateY(-5px) scale(1.06);
   border-color: #ffd700;
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.6), 0 0 26px rgba(255, 215, 0, 0.8);
   z-index: 5;
@@ -354,19 +354,19 @@ body > * { position: relative; z-index: 1; }
 /* 空き枠 */
 .unit-slot {
   width: 68px;
-  min-height: 84px;
+  min-height: 72px;
   border-radius: 10px;
   border: 1.5px dashed rgba(255, 255, 255, 0.13);
   background: rgba(255, 255, 255, 0.02);
 }
 
 /* ============================================================
-   手札
+   手札（コンパクト版）
    ============================================================ */
 .hand-card {
   position: relative;
-  width: 96px;
-  min-height: 118px;
+  width: 92px;
+  min-height: 100px;
   padding: 6px;
   border-radius: 10px;
   text-align: left;
@@ -390,7 +390,7 @@ body > * { position: relative; z-index: 1; }
   0%, 100% { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 6px rgba(var(--fx-rgb), 0.4); }
   50%      { box-shadow: 0 3px 8px rgba(0,0,0,0.6), 0 0 22px rgba(var(--fx-rgb), 0.95), 0 0 38px rgba(var(--fx-rgb), 0.35); }
 }
-.hand-card.is-playable:hover { transform: translateY(-8px) scale(1.04); }
+.hand-card.is-playable:hover { transform: translateY(-6px) scale(1.04); }
 .hand-card.is-dim { opacity: 0.45; filter: grayscale(35%); }
 .hand-card.is-target { border-color: #7fd4ff; animation: smeTarget 0.9s ease-in-out infinite; }
 
@@ -413,24 +413,24 @@ body > * { position: relative; z-index: 1; }
 .cost-gem.is-down { background: linear-gradient(135deg, #d6ffe9, #3fe0a0 55%, #0f7a52); box-shadow: 0 0 8px rgba(63, 224, 160, 0.8); }
 
 /* ============================================================
-   HP・マナ
+   HP・マナ（コンパクト版）
    ============================================================ */
 .hp-orb {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 52px;
-  height: 52px;
-  padding: 0 6px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0 5px;
   border-radius: 50%;
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 900;
   color: #fff;
   border: 2px solid rgba(255, 255, 255, 0.35);
   text-shadow: 0 2px 3px rgba(0, 0, 0, 0.9);
 }
-.hp-orb.me  { background: radial-gradient(circle at 35% 30%, #d6ffe9, #3fe0a0 35%, #0f7a52 75%, #03281a); box-shadow: 0 0 18px rgba(63, 224, 160, 0.6); }
-.hp-orb.opp { background: radial-gradient(circle at 35% 30%, #ffd6dc, #ff5c74 35%, #8a1228 75%, #300510); box-shadow: 0 0 18px rgba(255, 92, 116, 0.6); }
+.hp-orb.me  { background: radial-gradient(circle at 35% 30%, #d6ffe9, #3fe0a0 35%, #0f7a52 75%, #03281a); box-shadow: 0 0 16px rgba(63, 224, 160, 0.6); }
+.hp-orb.opp { background: radial-gradient(circle at 35% 30%, #ffd6dc, #ff5c74 35%, #8a1228 75%, #300510); box-shadow: 0 0 16px rgba(255, 92, 116, 0.6); }
 .hp-orb.is-danger { animation: smeDanger 0.9s ease-in-out infinite; }
 @keyframes smeDanger {
   0%, 100% { transform: scale(1); }
@@ -439,10 +439,10 @@ body > * { position: relative; z-index: 1; }
 
 .mana-row { display: flex; flex-wrap: wrap; gap: 3px; }
 .mana-dot {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   transform: rotate(45deg);
-  border-radius: 3px;
+  border-radius: 2px;
   border: 1px solid rgba(154, 116, 255, 0.35);
   background: rgba(10, 6, 22, 0.85);
   box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.8);
@@ -458,14 +458,14 @@ body > * { position: relative; z-index: 1; }
 }
 
 /* ============================================================
-   ターン・フェーズ表示
+   ターン・フェーズ表示（コンパクト版）
    ============================================================ */
 .turn-strip {
   text-align: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
   letter-spacing: 0.06em;
-  padding: 5px 8px;
+  padding: 4px 8px;
 }
 .turn-strip.mine {
   color: #3a2204;
@@ -480,8 +480,8 @@ body > * { position: relative; z-index: 1; }
 .phase-step {
   flex: 1;
   text-align: center;
-  font-size: 11px;
-  padding: 5px 0;
+  font-size: 10px;
+  padding: 3px 0;
   border-radius: 8px;
   color: #6f6a90;
   background: rgba(255, 255, 255, 0.04);
