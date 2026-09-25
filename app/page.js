@@ -329,9 +329,10 @@ export default function Home() {
     hp[myId] = E.newPlayer(E.buildDeck(selection), selection);
     E.dealInitialHand(hp[d.host]);
     E.dealInitialHand(hp[myId]);
+    const first = Math.random() < 0.5 ? d.host : myId; // 先攻をランダムに決定
     await updateDoc(ref, {
-      guest: myId, players: hp, phase: "play", turnPhase: "main",
-      log: [...d.log, "対戦開始！ 先攻は初ターンドローなし"],
+      guest: myId, players: hp, phase: "play", turnPhase: "main", turn: first,
+      log: [...d.log, "対戦開始！ 先攻はランダムで決定（先攻は初ターンドローなし）"],
     });
     setMsg("");
     setState(null);
