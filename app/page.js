@@ -1381,14 +1381,12 @@ sick ? "opacity-60 grayscale" : ""
   return (
     <div className="unit-enter">
       <button onClick={onTap} className={cls}>
-        {/* 召喚酔い中のマーク（カード下辺の中央） */}
+        {/* 召喚酔い中：頭上で★がクルクル回る */}
         {sick && (
-          <span
-            aria-hidden="true"
-            title="召喚酔い"
-            className="absolute -bottom-2 left-1/2 -translate-x-1/2 z-10 px-1.5 h-4 rounded-full bg-slate-800/90 border border-white/40 text-[9px] leading-none flex items-center justify-center shadow"
-          >
-            💤
+          <span className="dizzy" aria-hidden="true" title="召喚酔い">
+            <span>★</span>
+            <span>★</span>
+            <span>★</span>
           </span>
         )}
         {/* 能力確認ボタン（タップしても選択・攻撃はしない） */}
