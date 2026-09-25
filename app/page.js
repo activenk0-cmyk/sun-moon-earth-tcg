@@ -448,13 +448,20 @@ export default function Home() {
           <div className="sme-label mb-2">ROOM ID</div>
           <input
             value={room}
-            onChange={(e) => setRoom(e.target.value.toUpperCase())}
+            onChange={(e) => setRoom(e.target.value)}
             placeholder="4文字"
-            className="w-full p-4 rounded-lg bg-slate-950/70 border border-amber-200/30 text-center text-3xl tracking-[0.3em] mb-3 font-bold text-amber-200 outline-none focus:border-amber-300"
+            className="w-full p-4 rounded-lg bg-slate-950/70 border border-amber-200/30 text-center text-3xl tracking-[0.3em] mb-3 font-bold text-amber-200 outline-none focus:border-amber-300 uppercase"
             maxLength={4}
+            autoCapitalize="characters"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
           />
           {msg && <div className="text-red-400 text-sm mb-3">{msg}</div>}
-          <button onClick={() => joinRoom(room)} className="sme-btn sme-btn-moon">
+          <button
+            onClick={() => joinRoom(room.trim().toUpperCase())}
+            className="sme-btn sme-btn-moon"
+          >
             参加する
           </button>
           <button onClick={() => { setMsg(""); setScreen("deck"); }} className="sme-btn sme-btn-ghost mt-2">
