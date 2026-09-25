@@ -908,6 +908,7 @@ function GameScreen({
               key={u.uid} u={u} foe
               flash={flashIds.includes(u.uid)}
               targetable={oppTargetable(u)}
+              sick={!u.attacked && !u.canAttack}
               onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
@@ -970,6 +971,7 @@ function GameScreen({
               flash={flashIds.includes(u.uid)}
               targetable={mode === "reattack" && candidates.includes(u.uid)}
               ready={canMain && u.canAttack && !u.attacked}
+              sick={!u.attacked && !u.canAttack}
               onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
@@ -1349,7 +1351,7 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
 }
 
 /* ============ ユニット表示 ============ */
-function UnitCard({ u, foe, selected, targetable, ready, flash, onTap, onInfo }) {
+function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onInfo }) {
   const info = E.unitInfo(u);
   const base = info?.stat;
   const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
@@ -1366,11 +1368,22 @@ function UnitCard({ u, foe, selected, targetable, ready, flash, onTap, onInfo })
     foe ? "is-foe" : "",
     look,
     u.attacked ? "is-attacked" : "",
+    sick ? "opacity-60 grayscale" : "",
   ].filter(Boolean).join(" ");
 
   return (
     <div className="unit-enter">
       <button onClick={onTap} className={cls}>
+        {/* 召喚酔い中のマーク */}
+        {sick && (
+          <span
+            aria-hidden="true"
+            title="召喚酔い"
+            className="absolute -top-2 -left-2 z-10 w-5 h-5 rounded-full bg-slate-700 border border-white/50 text-[10px] flex items-center justify-center shadow-lg"
+          >
+            💤
+          </span>
+        )}
         {/* 能力確認ボタン（タップしても選択・攻撃はしない） */}
         {onInfo && (
           <span
