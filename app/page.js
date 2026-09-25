@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { db } from "../lib/firebase";
-import { doc, setDoc, getDoc, updateDoc, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, getDoc, getDocFromServer, updateDoc, onSnapshot } from "firebase/firestore";
 import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
@@ -14,6 +14,7 @@ const CPU_ID = "cpu";
 const YOU_ID = "you";
 const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
 const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
+const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
 
 const MODE_MSG = {
   damage3: "3ダメージを与える相手キャラを選んでください",
@@ -57,7 +58,7 @@ function resolveStyle(wants) {
   return styles[0];
 }
 
-// 前回のログと今回のログを比べて、新しく増えた分だけを返す
+// 前回のログと今回のログを比べて、新しく増えた分だけを返す（古いルーム用）
 function newEntries(prev, cur) {
   const ps = prev.map((x) => JSON.stringify(x));
   const cs = cur.map((x) => JSON.stringify(x));
@@ -69,6 +70,56 @@ function newEntries(prev, cur) {
     if (ok) return cur.slice(k);
   }
   return [];
+}
+
+// ログに通し番号を付ける（新しい行動を確実に見分けるため）
+function stampLog(next, prev) {
+  if (!next || !Array.isArray(next.log)) return next;
+  let seq = next.logSeq || (prev && prev.logSeq) || 0;
+  const log = next.log.map((l) => {
+    if (!l || typeof l !== "object" || l.n) return l;
+    seq += 1;
+    return { ...l, n: seq };
+  });
+  return { ...next, log, logSeq: seq };
+}
+
+// ログの中で一番大きい通し番号
+function maxSeq(log) {
+  return (log || []).reduce((m, l) => (l && typeof l === "object" && l.n > m ? l.n : m), 0);
+}
+
+// 定期取得した状態が、今の状態より新しいときだけ採用する
+function pickNewer(prev, next) {
+  if (!prev) return next;
+  const a = prev.logSeq || 0;
+  const b = next.logSeq || 0;
+  if (b < a) return prev;
+  if (b === a && prev.phase === next.phase && prev.guest === next.guest && prev.winner === next.winner) {
+    return prev;
+  }
+  return next;
+}
+
+// 再生パネルの表示時間（攻撃は長め）
+function replayMs(item) {
+  const atk = item.lines.some((t) => /を攻撃|プレイヤーに\d+ダメージ/.test(t));
+  const base = atk ? 3600 : 2600;
+  return Math.min(atk ? 5500 : 4200, base + item.changes.length * 300);
+}
+
+// 相手の直前ターンの行動（行った順）
+function lastOppActions(log, myId) {
+  const arr = log || [];
+  const out = [];
+  let i = arr.length - 1;
+  while (i >= 0 && !(arr[i] && typeof arr[i] === "object" && arr[i].by !== myId)) i--;
+  for (; i >= 0; i--) {
+    const l = arr[i];
+    if (!l || typeof l !== "object" || l.by === myId) break;
+    if (!TRIVIAL_LOG.test(l.t)) out.unshift(l.t);
+  }
+  return out;
 }
 
 // 盤面の変化（HP・スタッツ・登場・退場・攻撃）を調べる
@@ -113,6 +164,7 @@ export default function Home() {
   const [detail, setDetail] = useState(null);
   const [msg, setMsg] = useState("");
   const unsubRef = useRef(null);
+  const stateRef = useRef(null);
 
   // CPU戦
   const [cpuState, setCpuState] = useState(null);
@@ -166,6 +218,39 @@ export default function Home() {
     }
   }, [loaded, myId, screen, selection, room, cpuState, cpuDeck]);
 
+  // 最新のオンライン状態を覚えておく（定期取得で使う）
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // オンライン対戦：iPhoneなどで同期が止まったときの保険
+  // ・画面に戻ってきたら、つなぎ直して最新を取得
+  // ・相手のターン中は数秒ごとに最新を取得
+  useEffect(() => {
+    if (screen !== "game" || !room) return;
+    const wake = () => {
+      if (document.visibilityState !== "visible") return;
+      subscribe(room);
+      refreshOnline();
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    const iv = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      const s = stateRef.current;
+      if (s && s.phase === "play" && s.turn === myId) return; // 自分のターン中は不要
+      refreshOnline();
+    }, POLL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, room, myId]);
+
   const deckComplete = SLOTS.every((s) => selection[s]);
   const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
 
@@ -190,10 +275,15 @@ export default function Home() {
       const oppId = E.otherId(state, myId);
       if (oppId) {
         try {
+          const stamped = stampLog(
+            { ...state, log: [...(state.log || []), { by: myId, t: "リタイアしました" }].slice(-30) },
+            state
+          );
           await updateDoc(doc(db, "rooms", room), {
             winner: oppId,
             phase: "end",
-            log: [...(state.log || []), { by: myId, t: "リタイアしました" }].slice(-30),
+            log: stamped.log,
+            logSeq: stamped.logSeq,
           });
         } catch {
           // 通信に失敗してもタイトルへは戻る
@@ -216,6 +306,7 @@ export default function Home() {
       turnCount: 1,
       skipNext: null,
       winner: null,
+      logSeq: 0,
       log: ["ルームを作成しました"],
       players: { [myId]: E.newPlayer(deck, selection) },
     };
@@ -261,8 +352,24 @@ export default function Home() {
           leaveGame("menu");
         }
       },
-      () => leaveGame("menu")
+      () => {
+        // 通信エラー時はタイトルに戻さず、少し待ってつなぎ直す
+        setTimeout(() => {
+          if (unsubRef.current) subscribe(id);
+        }, 2000);
+      }
     );
+  }
+
+  // サーバーから最新の状態を直接取りに行く
+  async function refreshOnline() {
+    if (!room) return;
+    try {
+      const s = await getDocFromServer(doc(db, "rooms", room));
+      if (s.exists()) setState((prev) => pickNewer(prev, s.data()));
+    } catch {
+      // 取れなければ次の機会に
+    }
   }
 
   async function pushOnline(next) {
@@ -501,6 +608,7 @@ export default function Home() {
       onDeck={() => leaveGame("deck")}
       onTitle={() => leaveGame("menu")}
       onRetire={retire}
+      onRefresh={refreshOnline}
     />
   );
 }
@@ -516,7 +624,7 @@ function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onDeck,
     const delay = E.phaseOf(state) === "draw" ? 1400 : 850;
     const t = setTimeout(() => {
       const next = cpuStep(state, CPU_ID, cpuDeck?.style);
-      if (next) setState(next);
+      if (next) setState(stampLog(next, state));
     }, delay);
     return () => clearTimeout(t);
   }, [state, cpuDeck, setState, replaying]);
@@ -624,7 +732,7 @@ function RetireConfirm({ isCpu, onYes, onNo }) {
 /* ============ ゲーム画面（オンライン・CPU共通） ============ */
 function GameScreen({
   state, myId, room, apply, detail, setDetail, cpuDeck,
-  onRetry, onDeck, onTitle, onRetire, onReplayingChange,
+  onRetry, onDeck, onTitle, onRetire, onReplayingChange, onRefresh,
 }) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
@@ -634,6 +742,7 @@ function GameScreen({
   const [queue, setQueue] = useState([]); // 相手の行動の再生待ち
   const [showLog, setShowLog] = useState(false);
   const [confirmRetire, setConfirmRetire] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const lastTurnKey = useRef(null);
   const busy = useRef(false);
   const prevRef = useRef(null);
@@ -666,11 +775,17 @@ function GameScreen({
   useEffect(() => {
     if (!state || !state.players) return;
     const prev = prevRef.current;
-    prevRef.current = { log: state.log || [], players: state.players };
+    const curLog = state.log || [];
+    const curSeq = maxSeq(curLog);
+    prevRef.current = { log: curLog, players: state.players, seq: curSeq };
     if (!prev || state.phase === "waiting") return;
     const oppId = E.otherId(state, myId);
     if (!oppId) return;
-    const fresh = newEntries(prev.log, state.log || []);
+    // 通し番号があれば番号で、無ければ（古いルーム）従来の突き合わせで判定
+    const fresh =
+      curSeq > 0
+        ? curLog.filter((l) => l && typeof l === "object" && (l.n || 0) > prev.seq)
+        : newEntries(prev.log, curLog);
     const lines = fresh
       .filter((l) => typeof l !== "string" && l.by !== myId)
       .map((l) => l.t)
@@ -685,8 +800,7 @@ function GameScreen({
   // 再生中の行動を自動で次へ
   useEffect(() => {
     if (!current) return;
-    const ms = Math.min(4000, 2200 + current.changes.length * 250);
-    const t = setTimeout(() => setQueue((q) => q.slice(1)), ms);
+    const t = setTimeout(() => setQueue((q) => q.slice(1)), replayMs(current));
     return () => clearTimeout(t);
   }, [current?.id]);
 
@@ -746,15 +860,27 @@ function GameScreen({
   const mode = pendingPlay ? pendingPlay.kind : pendingAttack ? "goblin" : null;
   const candidates = pendingPlay ? pendingPlay.candidates : pendingAttack ? pendingAttack.candidates : [];
   const canMain = E.isActive(state, myId, "main") && !mode;
+  const lastOpp = lastOppActions(state.log, myId);
 
   /* ---- 状態を進める（連打での二重実行を防ぐ） ---- */
   async function run(next) {
     if (!next || busy.current) return;
     busy.current = true;
     try {
-      await apply(next);
+      await apply(stampLog(next, state));
     } finally {
       busy.current = false;
+    }
+  }
+
+  /* ---- 手動で最新の状態を取得 ---- */
+  async function manualRefresh() {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setTimeout(() => setRefreshing(false), 600);
     }
   }
 
@@ -955,6 +1081,24 @@ function GameScreen({
         </div>
       )}
 
+      {/* 相手の直前ターンの行動（タップで全件表示） */}
+      {lastOpp.length > 0 && (
+        <details className="mx-2 my-1 rounded-lg border border-rose-800/70 bg-rose-950/50 text-[11px]">
+          <summary className="px-3 py-1.5 cursor-pointer list-none flex items-center gap-2">
+            <span className="shrink-0 font-bold text-[10px] px-1.5 py-0.5 rounded bg-rose-700 text-white">
+              {oppLabel}の直前ターン
+            </span>
+            <span className="flex-1 truncate text-rose-100">{lastOpp[lastOpp.length - 1]}</span>
+            <span className="shrink-0 text-rose-300">{lastOpp.length}件 ▼</span>
+          </summary>
+          <ol className="px-3 pb-2 space-y-0.5 text-rose-100 list-decimal list-inside">
+            {lastOpp.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ol>
+        </details>
+      )}
+
       {/* ログ */}
       <div className="relative sme-log">
         <div ref={logRef} className="px-3 py-1 text-[10px] h-16 overflow-y-auto space-y-0.5">
@@ -1081,8 +1225,18 @@ function GameScreen({
         <PhaseBar phase={phase} mine={isMyTurn} />
 
         {!isMyTurn && (
-          <div className="sme-panel py-2 text-center text-slate-300 text-xs animate-pulse">
-            {isCpu ? "CPUが考えています…" : `相手の${PHASE_LABEL[phase]}フェーズ中です…`}
+          <div className="sme-panel py-2 px-3 text-xs flex items-center gap-2">
+            <span className="flex-1 text-center text-slate-300 animate-pulse">
+              {isCpu ? "CPUが考えています…" : `相手の${PHASE_LABEL[phase]}フェーズ中です…`}
+            </span>
+            {onRefresh && (
+              <button
+                onClick={manualRefresh}
+                className="shrink-0 text-[10px] px-2 py-1 rounded bg-indigo-900/80 border border-indigo-400/40 text-indigo-100"
+              >
+                {refreshing ? "取得中…" : "↻ 最新にする"}
+              </button>
+            )}
           </div>
         )}
 
@@ -1248,7 +1402,7 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
   else if (/を使用/.test(main)) { kind = "マジック"; color = "bg-sky-600"; }
   else if (/を生贄/.test(main)) { kind = "生贄"; color = "bg-indigo-600"; }
 
-  const duration = Math.min(4000, 2200 + item.changes.length * 250);
+  const duration = replayMs(item);
   const sideName = (s) => (s === "me" ? "あなた" : oppLabel);
 
   return (
@@ -1375,7 +1529,7 @@ function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onI
     foe ? "is-foe" : "",
     look,
     u.attacked ? "is-attacked" : "",
-sick ? "opacity-60 grayscale" : ""
+    sick ? "opacity-60 grayscale" : "",
   ].filter(Boolean).join(" ");
 
   return (
