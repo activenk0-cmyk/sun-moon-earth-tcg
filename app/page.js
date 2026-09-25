@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { db } from "../lib/firebase";
-import { doc, setDoc, getDoc, getDocFromServer, updateDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDocFromServer, updateDoc, onSnapshot, runTransaction } from "firebase/firestore";
 import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
@@ -15,6 +15,8 @@ const YOU_ID = "you";
 const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
 const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
+const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
+const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
 
 const MODE_MSG = {
   damage3: "3ダメージを与える相手キャラを選んでください",
@@ -31,10 +33,12 @@ const MODE_MSG = {
 const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン終了)$/;
 
 /* ============ ユーティリティ ============ */
-const roomId = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+const roomId = () =>
+  Array.from({ length: 4 }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join("");
 const fxClass = (f) => (f === "sun" || f === "moon" || f === "earth" ? `fx-${f}` : "fx-none");
 const tierColor = (t) =>
   t === 1 ? "bg-amber-500 text-slate-900" : t === 2 ? "bg-sky-600 text-white" : "bg-slate-600 text-white";
+const isComplete = (sel) => !!sel && SLOTS.every((s) => sel[s]);
 
 // ブラウザに保存したデータを読む
 function loadSave() {
@@ -56,6 +60,81 @@ function resolveStyle(wants) {
     if (hit) return hit;
   }
   return styles[0];
+}
+
+/* ---- ルームのデータ ---- */
+// 新しく作る部屋（デッキ選択待ち）
+function newLobby(host) {
+  return {
+    host,
+    guest: null,
+    phase: "lobby",
+    ready: {},
+    sels: {},
+    lobbyIn: { [host]: true },
+    gameNo: 0,
+    closed: false,
+    turn: host,
+    turnPhase: "main",
+    turnCount: 1,
+    skipNext: null,
+    winner: null,
+    logSeq: 0,
+    log: ["ルームを作成しました"],
+    players: {},
+  };
+}
+
+// 対戦後、同じ部屋でデッキ選択待ちに戻す
+function lobbyDoc(d, me) {
+  return {
+    host: d.host || null,
+    guest: d.guest || null,
+    phase: "lobby",
+    ready: {},
+    sels: d.sels || {},
+    lobbyIn: { [me]: true },
+    gameNo: d.gameNo || 0,
+    closed: false,
+    turn: d.host || null,
+    turnPhase: "main",
+    turnCount: 1,
+    skipNext: null,
+    winner: null,
+    logSeq: 0,
+    log: ["再戦の準備中"],
+    players: {},
+  };
+}
+
+// 2人の準備が整ったら対戦開始の状態を作る
+function gameDoc(base, sels) {
+  const h = base.host;
+  const g = base.guest;
+  const players = {
+    [h]: E.newPlayer(E.buildDeck(sels[h]), sels[h]),
+    [g]: E.newPlayer(E.buildDeck(sels[g]), sels[g]),
+  };
+  E.dealInitialHand(players[h]);
+  E.dealInitialHand(players[g]);
+  return {
+    host: h,
+    guest: g,
+    phase: "play",
+    ready: {},
+    sels,
+    lobbyIn: {},
+    gameNo: (base.gameNo || 0) + 1,
+    closed: false,
+    turn: Math.random() < 0.5 ? h : g, // 先攻をランダムに決定
+    turnPhase: "main", // 先攻1ターン目はドローなし
+    turnCount: 1,
+    skipNext: null,
+    winner: null,
+    logSeq: 0,
+    log: ["対戦開始！ 先攻はランダムで決定（先攻は初ターンドローなし）"],
+    players,
+  };
 }
 
 // 前回のログと今回のログを比べて、新しく増えた分だけを返す（古いルーム用）
@@ -92,6 +171,14 @@ function maxSeq(log) {
 // 定期取得した状態が、今の状態より新しいときだけ採用する
 function pickNewer(prev, next) {
   if (!prev) return next;
+  const ga = prev.gameNo || 0;
+  const gb = next.gameNo || 0;
+  if (gb !== ga) return gb > ga ? next : prev;
+  const rank = { play: 0, waiting: 0, end: 1, lobby: 2 };
+  const ra = rank[prev.phase] || 0;
+  const rb = rank[next.phase] || 0;
+  if (rb !== ra) return rb > ra ? next : prev;
+  if (next.phase === "lobby") return next;
   const a = prev.logSeq || 0;
   const b = next.logSeq || 0;
   if (b < a) return prev;
@@ -157,12 +244,16 @@ function diffBoards(prevP, curP, myId, oppId, lines) {
 export default function Home() {
   const [loaded, setLoaded] = useState(false);
   const [screen, setScreen] = useState("menu");
+  const [matchMode, setMatchMode] = useState(null); // "cpu" / "room"
   const [selection, setSelection] = useState({});
   const [myId, setMyId] = useState("");
   const [room, setRoom] = useState("");
+  const [joinInput, setJoinInput] = useState("");
   const [state, setState] = useState(null);
+  const [resultState, setResultState] = useState(null); // 決着画面を見ている間の結果
   const [detail, setDetail] = useState(null);
   const [msg, setMsg] = useState("");
+  const [lobbyBusy, setLobbyBusy] = useState(false);
   const unsubRef = useRef(null);
   const stateRef = useRef(null);
 
@@ -176,22 +267,40 @@ export default function Home() {
     setMyId(sv.myId || E.uid());
     if (sv.selection) setSelection(sv.selection);
     let sc = sv.screen || "menu";
+    let mm = sv.matchMode || null;
     if (sc === "cpu") {
       if (sv.cpuState && sv.cpuDeck) {
         setCpuState(sv.cpuState);
         setCpuDeck(sv.cpuDeck);
+        mm = "cpu";
       } else {
         sc = "deck";
+        mm = "cpu";
       }
     }
     if (sc === "game") {
       if (sv.room) {
         setRoom(sv.room);
         subscribe(sv.room);
+        mm = "room";
       } else {
         sc = "menu";
       }
     }
+    if (sc === "deck") {
+      if (mm === "room") {
+        if (sv.room) {
+          setRoom(sv.room);
+          subscribe(sv.room);
+        } else {
+          sc = "menu";
+        }
+      } else if (mm !== "cpu") {
+        sc = "menu";
+      }
+    }
+    if (!SCREENS.includes(sc)) sc = "menu";
+    setMatchMode(sc === "menu" ? null : mm);
     setScreen(sc);
     setLoaded(true);
     return () => unsubRef.current && unsubRef.current();
@@ -207,6 +316,7 @@ export default function Home() {
         JSON.stringify({
           myId,
           screen,
+          matchMode,
           selection,
           room,
           cpuState: screen === "cpu" ? cpuState : null,
@@ -216,7 +326,7 @@ export default function Home() {
     } catch {
       // 保存できなくてもゲームは続ける
     }
-  }, [loaded, myId, screen, selection, room, cpuState, cpuDeck]);
+  }, [loaded, myId, screen, matchMode, selection, room, cpuState, cpuDeck]);
 
   // 最新のオンライン状態を覚えておく（定期取得で使う）
   useEffect(() => {
@@ -225,9 +335,10 @@ export default function Home() {
 
   // オンライン対戦：iPhoneなどで同期が止まったときの保険
   // ・画面に戻ってきたら、つなぎ直して最新を取得
-  // ・相手のターン中は数秒ごとに最新を取得
+  // ・相手のターン中やデッキ選択中は数秒ごとに最新を取得
   useEffect(() => {
-    if (screen !== "game" || !room) return;
+    if (!room || matchMode !== "room") return;
+    if (screen !== "game" && screen !== "deck") return;
     const wake = () => {
       if (document.visibilityState !== "visible") return;
       subscribe(room);
@@ -249,10 +360,38 @@ export default function Home() {
       clearInterval(iv);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, room, myId]);
+  }, [screen, room, myId, matchMode]);
+
+  // 決着したら結果を控えておく（相手が先に再戦準備に入っても結果画面を見続けられるように）
+  useEffect(() => {
+    if (screen === "game" && state && state.phase === "end") setResultState(state);
+  }, [screen, state]);
+
+  // ルームマッチ：2人とも準備完了で対戦画面へ／部屋がデッキ選択待ちならデッキ選択へ
+  useEffect(() => {
+    if (matchMode !== "room" || !state) return;
+    if (screen === "deck" && state.phase === "play" && state.players && state.players[myId]) {
+      setResultState(null);
+      setDetail(null);
+      setScreen("game");
+      return;
+    }
+    if (screen === "game" && state.phase === "lobby" && !resultState) {
+      setScreen("deck");
+    }
+  }, [screen, state, matchMode, myId, resultState]);
 
   const deckComplete = SLOTS.every((s) => selection[s]);
   const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
+
+  /* ---- ルームの様子（デッキ選択画面用） ---- */
+  const lobby = matchMode === "room" ? state : null;
+  const oppIdL = lobby ? (lobby.host === myId ? lobby.guest : lobby.host) : null;
+  const lobbyReady = lobby && lobby.phase === "lobby" && lobby.ready ? lobby.ready : {};
+  const myReady = !!lobbyReady[myId];
+  const oppReady = !!(oppIdL && lobbyReady[oppIdL]);
+  const oppInLobby = !!(oppIdL && lobby && lobby.phase === "lobby" && lobby.lobbyIn && lobby.lobbyIn[oppIdL]);
+  const locked = matchMode === "room" && myReady;
 
   /* ---- 対戦から抜ける（to: 移動先の画面） ---- */
   function leaveGame(to = "menu") {
@@ -261,11 +400,50 @@ export default function Home() {
       unsubRef.current = null;
     }
     setState(null);
+    setResultState(null);
     setRoom("");
     setCpuState(null);
     setCpuDeck(null);
     setDetail(null);
+    setMsg("");
+    setMatchMode(null);
     setScreen(to);
+  }
+
+  /* ---- 部屋から自分を外す ---- */
+  async function leaveRoom(id) {
+    if (!id || !myId) return;
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return;
+        const d = snap.data();
+        const ready = { ...(d.ready || {}) };
+        delete ready[myId];
+        const lobbyIn = { ...(d.lobbyIn || {}) };
+        delete lobbyIn[myId];
+        if (d.guest === myId) {
+          tx.update(ref, { guest: null, ready, lobbyIn });
+        } else if (d.host === myId) {
+          if (d.guest) {
+            // 相手が残っていれば、相手を部屋主にする
+            tx.update(ref, { host: d.guest, guest: null, ready, lobbyIn });
+          } else {
+            tx.update(ref, { host: null, closed: true, ready, lobbyIn });
+          }
+        }
+      });
+    } catch {
+      // 通信に失敗しても画面は戻る
+    }
+  }
+
+  /* ---- 部屋を出てタイトルへ ---- */
+  async function leaveOnline() {
+    const id = room;
+    leaveGame("menu");
+    await leaveRoom(id);
   }
 
   /* ---- リタイア ---- */
@@ -290,55 +468,165 @@ export default function Home() {
         }
       }
     }
+    if (screen === "game" && room) {
+      await leaveOnline();
+      return;
+    }
     leaveGame("menu");
   }
 
-  /* ---- ルーム作成 ---- */
-  async function createRoom() {
-    const id = roomId();
-    const deck = E.buildDeck(selection);
-    const init = {
-      host: myId,
-      guest: null,
-      phase: "waiting",
-      turn: myId,
-      turnPhase: "main", // 先攻1ターン目はドローなし
-      turnCount: 1,
-      skipNext: null,
-      winner: null,
-      logSeq: 0,
-      log: ["ルームを作成しました"],
-      players: { [myId]: E.newPlayer(deck, selection) },
-    };
-    await setDoc(doc(db, "rooms", id), init);
+  /* ---- 部屋に入った後の共通処理 ---- */
+  function enterRoom(id) {
     setState(null);
+    setResultState(null);
+    setDetail(null);
     setRoom(id);
+    setMatchMode("room");
     subscribe(id);
-    setScreen("game");
+    setScreen("deck");
   }
 
-  /* ---- ルーム参加 ---- */
-  async function joinRoom(id) {
-    const ref = doc(db, "rooms", id);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) { setMsg("ルームが見つかりません"); return; }
-    const d = snap.data();
-    if (d.guest) { setMsg("すでに満室です"); return; }
-
-    const hp = { ...d.players };
-    hp[myId] = E.newPlayer(E.buildDeck(selection), selection);
-    E.dealInitialHand(hp[d.host]);
-    E.dealInitialHand(hp[myId]);
-    const first = Math.random() < 0.5 ? d.host : myId; // 先攻をランダムに決定
-    await updateDoc(ref, {
-      guest: myId, players: hp, phase: "play", turnPhase: "main", turn: first,
-      log: [...d.log, "対戦開始！ 先攻はランダムで決定（先攻は初ターンドローなし）"],
-    });
+  /* ---- 部屋を作る ---- */
+  async function createRoom() {
+    if (lobbyBusy || !myId) return;
+    setLobbyBusy(true);
     setMsg("");
-    setState(null);
-    setRoom(id);
-    subscribe(id);
-    setScreen("game");
+    try {
+      let id = null;
+      for (let i = 0; i < 5 && !id; i++) {
+        const cand = roomId();
+        const ok = await runTransaction(db, async (tx) => {
+          const ref = doc(db, "rooms", cand);
+          const snap = await tx.get(ref);
+          if (snap.exists()) {
+            const d = snap.data();
+            if (!d.closed && d.host) return false; // 使用中のIDなら作り直す
+          }
+          tx.set(ref, newLobby(myId));
+          return true;
+        });
+        if (ok) id = cand;
+      }
+      if (!id) throw new Error("no id");
+      enterRoom(id);
+    } catch {
+      setMsg("部屋を作れませんでした。もう一度お試しください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 部屋に入る ---- */
+  async function joinRoom(raw) {
+    const id = String(raw || "").trim().toUpperCase();
+    if (id.length !== 4) {
+      setMsg("4文字のIDを入力してください");
+      return;
+    }
+    if (lobbyBusy || !myId) return;
+    setLobbyBusy(true);
+    setMsg("");
+    try {
+      const res = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return "none";
+        const d = snap.data();
+        if (d.closed || !d.host) return "none";
+        if (d.host === myId || d.guest === myId) return "ok"; // 入り直し
+        if (d.guest) return "full";
+        if (d.phase !== "lobby" && d.phase !== "end") return "none"; // 古い形式の部屋
+        tx.update(ref, {
+          guest: myId,
+          ready: { ...(d.ready || {}), [myId]: false },
+          lobbyIn: { ...(d.lobbyIn || {}), [myId]: true },
+        });
+        return "ok";
+      });
+      if (res === "none") {
+        setMsg("ルームが見つかりません");
+      } else if (res === "full") {
+        setMsg("すでに満室です");
+      } else {
+        setJoinInput("");
+        enterRoom(id);
+      }
+    } catch {
+      setMsg("通信に失敗しました。もう一度お試しください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 準備完了／取り消し ---- */
+  async function toggleReady(next) {
+    if (!room || !myId || lobbyBusy) return;
+    if (next && !deckComplete) return;
+    setLobbyBusy(true);
+    setMsg("");
+    const sel = { ...selection };
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", room);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("gone");
+        const d = snap.data();
+        if (d.host !== myId && d.guest !== myId) throw new Error("gone");
+        let base;
+        if (d.phase === "lobby") base = d;
+        else if (d.phase === "end") base = lobbyDoc(d, myId);
+        else return; // すでに対戦が始まっている
+        const ready = { ...(base.ready || {}), [myId]: next };
+        const sels = { ...(base.sels || {}), [myId]: sel };
+        const lobbyIn = { ...(base.lobbyIn || {}), [myId]: true };
+        const h = base.host;
+        const g = base.guest;
+        if (next && h && g && ready[h] && ready[g] && isComplete(sels[h]) && isComplete(sels[g])) {
+          tx.set(ref, gameDoc(base, sels));
+        } else {
+          tx.set(ref, { ...base, ready, sels, lobbyIn });
+        }
+      });
+    } catch {
+      setMsg("通信に失敗しました。もう一度押してください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 再戦（ルームマッチ） ---- */
+  async function rematchOnline() {
+    const id = room;
+    setResultState(null);
+    setDetail(null);
+    setMsg("");
+    setScreen("deck");
+    if (!id) return;
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return;
+        const d = snap.data();
+        if (d.phase === "end") {
+          tx.set(ref, lobbyDoc(d, myId));
+        } else if (d.phase === "lobby") {
+          tx.update(ref, { lobbyIn: { ...(d.lobbyIn || {}), [myId]: true } });
+        }
+      });
+    } catch {
+      // 失敗しても「準備完了」を押したときに部屋を戻す
+    }
+  }
+
+  /* ---- 再戦（CPU） ---- */
+  function rematchCpu() {
+    setCpuState(null);
+    setCpuDeck(null);
+    setDetail(null);
+    setMsg("");
+    setMatchMode("cpu");
+    setScreen("deck");
   }
 
   function subscribe(id) {
@@ -347,7 +635,12 @@ export default function Home() {
       doc(db, "rooms", id),
       (s) => {
         if (s.exists()) {
-          setState(s.data());
+          const d = s.data();
+          if (d.closed) {
+            leaveGame("menu");
+            return;
+          }
+          setState(d);
         } else {
           // ルームが無くなっていたらタイトルへ
           leaveGame("menu");
@@ -379,6 +672,7 @@ export default function Home() {
 
   /* ---- CPU戦開始 ---- */
   function startCpu() {
+    if (!deckComplete) return;
     const base = DECKS.length ? pickDeck() : pickCpuDeck();
     const d = { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
     setCpuDeck(d);
@@ -392,6 +686,8 @@ export default function Home() {
         log: [`CPUのデッキ: ${d.name}（Tier${d.tier}）`],
       })
     );
+    setDetail(null);
+    setMatchMode("cpu");
     setScreen("cpu");
   }
 
@@ -411,36 +707,129 @@ export default function Home() {
         <div className="sme-title-line" />
         <p className="sme-sub text-[11px] mt-4 mb-12">THREE FACTIONS CARD BATTLE</p>
 
-        <div className="w-full max-w-xs">
-          <button onClick={() => setScreen("deck")} className="sme-btn sme-btn-sun sme-glow text-lg">
-            デッキを作って対戦
+        <div className="w-full max-w-xs flex flex-col gap-3">
+          <button
+            onClick={() => { setMsg(""); setMatchMode("cpu"); setScreen("deck"); }}
+            className="sme-btn sme-btn-earth sme-glow text-lg"
+          >
+            CPU対戦
+          </button>
+          <button
+            onClick={() => { setMsg(""); setScreen("roomMenu"); }}
+            className="sme-btn sme-btn-sun sme-glow text-lg"
+          >
+            ルームマッチ
           </button>
         </div>
 
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
           10のコスト枠から各1種を選び、4枚ずつ計40枚のデッキを作ります。
-          友達とのルーム対戦と、CPU対戦が遊べます。
+          友達とのルームマッチと、CPU対戦が遊べます。
         </div>
       </main>
     );
   }
 
-  /* ============ 画面: デッキ構築 ============ */
-  if (screen === "deck") {
+  /* ============ 画面: ルームマッチ（作る／入る） ============ */
+  if (screen === "roomMenu") {
     return (
-      <main className="min-h-screen p-4 max-w-lg mx-auto pb-48">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="sme-heading text-2xl">デッキ構築</h2>
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
+        <h2 className="sme-heading text-2xl mb-6 text-center">ルームマッチ</h2>
+        <div className="sme-panel p-5 flex flex-col gap-3">
+          <button disabled={lobbyBusy} onClick={createRoom} className="sme-btn sme-btn-sun sme-glow">
+            {lobbyBusy ? "作成中…" : "部屋を作る"}
+          </button>
           <button
-            onClick={() => setScreen("menu")}
-            className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+            disabled={lobbyBusy}
+            onClick={() => { setMsg(""); setJoinInput(""); setScreen("join"); }}
+            className="sme-btn sme-btn-moon"
           >
-            タイトルへ
+            部屋に入る
+          </button>
+          {msg && <div className="text-red-400 text-sm">{msg}</div>}
+          <button
+            onClick={() => { setMsg(""); setMatchMode(null); setScreen("menu"); }}
+            className="sme-btn sme-btn-ghost"
+          >
+            戻る
           </button>
         </div>
+      </main>
+    );
+  }
+
+  /* ============ 画面: ルーム参加 ============ */
+  if (screen === "join") {
+    return (
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
+        <h2 className="sme-heading text-2xl mb-6 text-center">部屋に入る</h2>
+        <div className="sme-panel p-5">
+          <div className="sme-label mb-2">ROOM ID</div>
+          <input
+            value={joinInput}
+            onChange={(e) => setJoinInput(e.target.value)}
+            placeholder="4文字"
+            className="w-full p-4 rounded-lg bg-slate-950/70 border border-amber-200/30 text-center text-3xl tracking-[0.3em] mb-3 font-bold text-amber-200 outline-none focus:border-amber-300 uppercase"
+            maxLength={4}
+            autoCapitalize="characters"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {msg && <div className="text-red-400 text-sm mb-3">{msg}</div>}
+          <button disabled={lobbyBusy} onClick={() => joinRoom(joinInput)} className="sme-btn sme-btn-moon">
+            {lobbyBusy ? "確認中…" : "入室する"}
+          </button>
+          <button onClick={() => { setMsg(""); setScreen("roomMenu"); }} className="sme-btn sme-btn-ghost mt-2">
+            戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* ============ 画面: デッキ選択 ============ */
+  if (screen === "deck") {
+    const isRoom = matchMode === "room";
+    let oppStatus = "未入室（IDを伝えてください）";
+    if (oppIdL) {
+      if (lobby && lobby.phase === "end") oppStatus = "結果画面を見ています";
+      else if (oppReady) oppStatus = "準備完了";
+      else if (oppInLobby) oppStatus = "デッキ選択中";
+      else oppStatus = "結果画面を見ています";
+    }
+    let hint = "";
+    if (isRoom && myReady) {
+      if (!oppIdL) hint = "相手の入室を待っています…";
+      else if (!oppReady) hint = "相手の準備完了を待っています…";
+      else hint = "対戦を開始します…";
+    }
+
+    return (
+      <main className={`min-h-screen p-4 max-w-lg mx-auto ${isRoom ? "pb-72" : "pb-48"}`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="sme-heading text-2xl">デッキ選択</h2>
+          {isRoom ? (
+            <button onClick={leaveOnline} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+              退室する
+            </button>
+          ) : (
+            <button
+              onClick={() => { setMsg(""); setMatchMode(null); setScreen("menu"); }}
+              className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+            >
+              タイトルへ
+            </button>
+          )}
+        </div>
         <p className="text-xs text-slate-400 mb-4">
-          各枠から1種類ずつ選択（「詳細」で効果を確認）
+          {isRoom ? "ルームマッチ" : "CPU対戦"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）
         </p>
+        {locked && (
+          <div className="sme-panel p-2 mb-4 text-[11px] text-amber-200 text-center">
+            準備完了中はデッキを変更できません（変更するときは「準備を取り消す」）
+          </div>
+        )}
 
         {/* おすすめデッキ */}
         <div className="mb-6">
@@ -451,7 +840,7 @@ export default function Home() {
               return (
                 <button
                   key={d.id}
-                  onClick={() => setSelection({ ...d.selection })}
+                  onClick={() => { if (!locked) setSelection({ ...d.selection }); }}
                   className={`sme-btn sme-btn-sm shrink-0 !w-auto text-[11px] ${on ? "sme-btn-sun" : "sme-btn-ghost"}`}
                 >
                   <span className={`inline-block text-[9px] font-bold px-1 rounded mr-1 ${tierColor(d.tier)}`}>
@@ -495,7 +884,7 @@ export default function Home() {
                 return (
                   <button
                     key={c.id}
-                    onClick={() => setSelection({ ...selection, [slot]: c.id })}
+                    onClick={() => { if (!locked) setSelection({ ...selection, [slot]: c.id }); }}
                     className={`pick-card ${fxClass(c.faction)} ${on ? "is-on" : ""}`}
                   >
                     <div className="text-[10px] mb-1 fx-text font-bold">
@@ -518,64 +907,69 @@ export default function Home() {
 
         <div className="fixed bottom-0 left-0 right-0 z-20 p-4 sme-panel !rounded-none !border-x-0 !border-b-0">
           <div className="max-w-lg mx-auto">
+            {isRoom && (
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="sme-label">ROOM ID</span>
+                  <span className="text-2xl font-bold text-amber-200 tracking-[0.25em]">{room}</span>
+                </div>
+                <span className="text-[10px] text-slate-400">このIDを相手に伝えてください</span>
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2">
               <span className="sme-label">DECK</span>
               <span className={`text-xs font-bold ${deckComplete ? "text-emerald-300" : "text-slate-400"}`}>
                 {Object.keys(selection).length} / 10 枠選択済み
               </span>
             </div>
-            <button
-              disabled={!deckComplete}
-              onClick={startCpu}
-              className={`sme-btn sme-btn-earth mb-2 ${deckComplete ? "sme-glow" : ""}`}
-            >
-              CPUと対戦
-            </button>
-            <div className="flex gap-2">
-              <button disabled={!deckComplete} onClick={createRoom} className="sme-btn sme-btn-sun flex-1">
-                ルーム作成
+
+            {isRoom ? (
+              <>
+                <div className="grid grid-cols-2 gap-2 text-[11px] mb-2">
+                  <div className="sme-panel px-2 py-1.5">
+                    <span className="text-slate-400">あなた：</span>
+                    <span className={myReady ? "text-emerald-300 font-bold" : "text-slate-200"}>
+                      {myReady ? "準備完了" : "デッキ選択中"}
+                    </span>
+                  </div>
+                  <div className="sme-panel px-2 py-1.5">
+                    <span className="text-slate-400">相手：</span>
+                    <span className={oppReady ? "text-emerald-300 font-bold" : "text-slate-200"}>
+                      {oppStatus}
+                    </span>
+                  </div>
+                </div>
+                {msg && <div className="text-red-400 text-xs mb-2">{msg}</div>}
+                {hint && <div className="text-[11px] text-amber-200 mb-2 text-center animate-pulse">{hint}</div>}
+                {!state ? (
+                  <button disabled className="sme-btn sme-btn-ghost">接続中…</button>
+                ) : myReady ? (
+                  <button disabled={lobbyBusy} onClick={() => toggleReady(false)} className="sme-btn sme-btn-ghost">
+                    準備を取り消す
+                  </button>
+                ) : (
+                  <button
+                    disabled={lobbyBusy || !deckComplete}
+                    onClick={() => toggleReady(true)}
+                    className={`sme-btn sme-btn-sun ${deckComplete ? "sme-glow" : ""}`}
+                  >
+                    準備完了
+                  </button>
+                )}
+              </>
+            ) : (
+              <button
+                disabled={!deckComplete}
+                onClick={startCpu}
+                className={`sme-btn sme-btn-earth ${deckComplete ? "sme-glow" : ""}`}
+              >
+                準備完了（対戦開始）
               </button>
-              <button disabled={!deckComplete} onClick={() => setScreen("join")} className="sme-btn sme-btn-moon flex-1">
-                ルーム参加
-              </button>
-            </div>
+            )}
           </div>
         </div>
 
         {detail && <DetailModal card={detail} onClose={() => setDetail(null)} />}
-      </main>
-    );
-  }
-
-  /* ============ 画面: ルーム参加 ============ */
-  if (screen === "join") {
-    return (
-      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
-        <h2 className="sme-heading text-2xl mb-6 text-center">ルームに参加</h2>
-        <div className="sme-panel p-5">
-          <div className="sme-label mb-2">ROOM ID</div>
-          <input
-            value={room}
-            onChange={(e) => setRoom(e.target.value)}
-            placeholder="4文字"
-            className="w-full p-4 rounded-lg bg-slate-950/70 border border-amber-200/30 text-center text-3xl tracking-[0.3em] mb-3 font-bold text-amber-200 outline-none focus:border-amber-300 uppercase"
-            maxLength={4}
-            autoCapitalize="characters"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {msg && <div className="text-red-400 text-sm mb-3">{msg}</div>}
-          <button
-            onClick={() => joinRoom(room.trim().toUpperCase())}
-            className="sme-btn sme-btn-moon"
-          >
-            参加する
-          </button>
-          <button onClick={() => { setMsg(""); setScreen("deck"); }} className="sme-btn sme-btn-ghost mt-2">
-            戻る
-          </button>
-        </div>
       </main>
     );
   }
@@ -589,8 +983,7 @@ export default function Home() {
         cpuDeck={cpuDeck}
         detail={detail}
         setDetail={setDetail}
-        onRetry={startCpu}
-        onDeck={() => leaveGame("deck")}
+        onRematch={rematchCpu}
         onTitle={() => leaveGame("menu")}
         onRetire={retire}
       />
@@ -598,16 +991,29 @@ export default function Home() {
   }
 
   /* ============ 画面: オンライン対戦 ============ */
+  const shown = resultState && (!state || state.phase !== "end") ? resultState : state;
+  let rematchNote = null;
+  if (resultState && state && state.phase !== "end") {
+    const oppR = E.otherId(resultState, myId);
+    const present = !!oppR && (state.host === oppR || state.guest === oppR);
+    if (!present) {
+      rematchNote = "相手は退室しました（再戦を押すと、この部屋で次の相手を待てます）";
+    } else if (state.phase === "lobby" && state.lobbyIn && state.lobbyIn[oppR]) {
+      rematchNote = "相手は再戦の準備を始めています";
+    }
+  }
+
   return (
     <GameScreen
-      state={state}
+      state={shown}
       myId={myId}
       room={room}
       apply={pushOnline}
       detail={detail}
       setDetail={setDetail}
-      onDeck={() => leaveGame("deck")}
-      onTitle={() => leaveGame("menu")}
+      onRematch={rematchOnline}
+      rematchNote={rematchNote}
+      onTitle={leaveOnline}
       onRetire={retire}
       onRefresh={refreshOnline}
     />
@@ -615,7 +1021,7 @@ export default function Home() {
 }
 
 /* ============ CPU戦（CPUの手番を自動で進める） ============ */
-function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onDeck, onTitle, onRetire }) {
+function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTitle, onRetire }) {
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
@@ -639,8 +1045,7 @@ function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRetry, onDeck,
       detail={detail}
       setDetail={setDetail}
       cpuDeck={cpuDeck}
-      onRetry={onRetry}
-      onDeck={onDeck}
+      onRematch={onRematch}
       onTitle={onTitle}
       onRetire={onRetire}
       onReplayingChange={setReplaying}
@@ -717,7 +1122,7 @@ function RetireConfirm({ isCpu, onYes, onNo }) {
         <p className="text-xs text-slate-300 mb-4 leading-relaxed">
           {isCpu
             ? "この対戦は終了し、タイトル画面に戻ります。"
-            : "相手の勝利となり、タイトル画面に戻ります。"}
+            : "相手の勝利となり、部屋を出てタイトル画面に戻ります。"}
         </p>
         <button onClick={onYes} className="sme-btn sme-btn-danger mb-2">
           リタイアする
@@ -733,7 +1138,7 @@ function RetireConfirm({ isCpu, onYes, onNo }) {
 /* ============ ゲーム画面（オンライン・CPU共通） ============ */
 function GameScreen({
   state, myId, room, apply, detail, setDetail, cpuDeck,
-  onRetry, onDeck, onTitle, onRetire, onReplayingChange, onRefresh,
+  onRematch, rematchNote, onTitle, onRetire, onReplayingChange, onRefresh,
 }) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
@@ -779,7 +1184,7 @@ function GameScreen({
     const curLog = state.log || [];
     const curSeq = maxSeq(curLog);
     prevRef.current = { log: curLog, players: state.players, seq: curSeq };
-    if (!prev || state.phase === "waiting") return;
+    if (!prev || state.phase === "waiting" || state.phase === "lobby") return;
     const oppId = E.otherId(state, myId);
     if (!oppId) return;
     // 通し番号があれば番号で、無ければ（古いルーム）従来の突き合わせで判定
@@ -843,8 +1248,59 @@ function GameScreen({
   }
 
   const oppId = E.otherId(state, myId);
-  const me = state.players[myId];
-  const opp = state.players[oppId];
+  const me = state.players ? state.players[myId] : null;
+  const opp = state.players && oppId ? state.players[oppId] : null;
+
+  /* ---- ログ表示 ---- */
+  const renderLog = (l, i) => {
+    if (typeof l === "string") return <div key={i} className="text-slate-500">{l}</div>;
+    const mine = l.by === myId;
+    return (
+      <div key={i} className={mine ? "text-emerald-300" : "text-rose-300"}>
+        <span className={`inline-block text-[9px] px-1 mr-1 rounded ${mine ? "bg-emerald-900" : "bg-rose-900"}`}>
+          {mine ? "自分" : oppLabel}
+        </span>
+        {l.t}
+      </div>
+    );
+  };
+
+  /* ============ 決着画面 ============ */
+  if (state.phase === "end") {
+    const win = state.winner === myId;
+    return (
+      <main className="min-h-screen p-8 text-center max-w-lg mx-auto flex flex-col justify-center">
+        <h1 className={`result-title ${win ? "win" : "lose"} my-6`}>
+          {win ? "VICTORY" : "DEFEAT"}
+        </h1>
+        <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
+        {isCpu && (
+          <div className="text-sm text-slate-300 mb-4">
+            CPUのデッキ: {cpuDeck.name}（Tier{cpuDeck.tier}）
+          </div>
+        )}
+        <div className="sme-panel text-xs mb-6 text-left p-3 space-y-0.5">
+          {(state.log || []).slice(-8).map(renderLog)}
+        </div>
+        {rematchNote && (
+          <div className="sme-panel text-xs mb-4 p-3 text-amber-200">{rematchNote}</div>
+        )}
+        <div className="flex flex-col gap-2">
+          {onRematch && (
+            <button onClick={onRematch} className="sme-btn sme-btn-sun sme-glow">
+              再戦する
+            </button>
+          )}
+          {onTitle && (
+            <button onClick={onTitle} className="sme-btn sme-btn-ghost">
+              {isCpu ? "タイトルへ戻る" : "退室してタイトルへ"}
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   if (!me || !opp) {
     return (
       <div className="p-8 text-center">
@@ -940,58 +1396,6 @@ function GameScreen({
   const flashIds = current
     ? current.changes.filter((c) => c.kind === "unit" || c.kind === "new").map((c) => c.uid)
     : [];
-
-  /* ---- ログ表示 ---- */
-  const renderLog = (l, i) => {
-    if (typeof l === "string") return <div key={i} className="text-slate-500">{l}</div>;
-    const mine = l.by === myId;
-    return (
-      <div key={i} className={mine ? "text-emerald-300" : "text-rose-300"}>
-        <span className={`inline-block text-[9px] px-1 mr-1 rounded ${mine ? "bg-emerald-900" : "bg-rose-900"}`}>
-          {mine ? "自分" : oppLabel}
-        </span>
-        {l.t}
-      </div>
-    );
-  };
-
-  /* ============ 決着画面 ============ */
-  if (state.phase === "end") {
-    const win = state.winner === myId;
-    return (
-      <main className="min-h-screen p-8 text-center max-w-lg mx-auto flex flex-col justify-center">
-        <h1 className={`result-title ${win ? "win" : "lose"} my-6`}>
-          {win ? "VICTORY" : "DEFEAT"}
-        </h1>
-        <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
-        {isCpu && (
-          <div className="text-sm text-slate-300 mb-4">
-            CPUのデッキ: {cpuDeck.name}（Tier{cpuDeck.tier}）
-          </div>
-        )}
-        <div className="sme-panel text-xs mb-6 text-left p-3 space-y-0.5">
-          {(state.log || []).slice(-8).map(renderLog)}
-        </div>
-        <div className="flex flex-col gap-2">
-          {onRetry && (
-            <button onClick={onRetry} className="sme-btn sme-btn-sun sme-glow">
-              もう一度CPUと対戦
-            </button>
-          )}
-          {onDeck && (
-            <button onClick={onDeck} className={`sme-btn ${onRetry ? "sme-btn-ghost" : "sme-btn-sun sme-glow"}`}>
-              デッキ構築へ戻る
-            </button>
-          )}
-          {onTitle && (
-            <button onClick={onTitle} className="sme-btn sme-btn-ghost">
-              タイトルへ戻る
-            </button>
-          )}
-        </div>
-      </main>
-    );
-  }
 
   const zoneList = zone === "me" ? me.sacrifice : zone === "opp" ? opp.sacrifice : [];
   const canSac = E.canSacrifice(state, myId);
