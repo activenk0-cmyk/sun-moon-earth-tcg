@@ -1,4 +1,5 @@
 import "./globals.css";
+import "./compact.css";
 
 export const metadata = {
   title: "SUN / MOON / EARTH",
