@@ -689,3 +689,46 @@ body > * { position: relative; z-index: 1; }
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
+
+/* ===== 召喚酔い：ピヨピヨ演出 ===== */
+.dizzy {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+.dizzy span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin-left: -5px;
+  margin-top: -6px;
+  font-size: 11px;
+  line-height: 1;
+  color: #fde047;
+  text-shadow: 0 0 4px rgba(250, 204, 21, 0.9), 0 0 1px #000;
+  animation: dizzy-orbit 1.5s linear infinite;
+}
+.dizzy span:nth-child(2) { animation-delay: -0.5s; }
+.dizzy span:nth-child(3) { animation-delay: -1s; }
+
+@keyframes dizzy-orbit {
+  0%    { transform: translate(18px, 0)       scale(0.85); opacity: 0.9; }
+  12.5% { transform: translate(12.7px, 3.5px) scale(1);    opacity: 1; }
+  25%   { transform: translate(0, 5px)        scale(1.15); opacity: 1; }
+  37.5% { transform: translate(-12.7px, 3.5px) scale(1);   opacity: 1; }
+  50%   { transform: translate(-18px, 0)      scale(0.85); opacity: 0.9; }
+  62.5% { transform: translate(-12.7px, -3.5px) scale(0.7); opacity: 0.6; }
+  75%   { transform: translate(0, -5px)       scale(0.6);  opacity: 0.45; }
+  87.5% { transform: translate(12.7px, -3.5px) scale(0.7); opacity: 0.6; }
+  100%  { transform: translate(18px, 0)       scale(0.85); opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dizzy span { animation: none; }
+  .dizzy span:nth-child(1) { transform: translate(-12px, 0); }
+  .dizzy span:nth-child(3) { transform: translate(12px, 0); }
+}
