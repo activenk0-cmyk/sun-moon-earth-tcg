@@ -1,0 +1,113 @@
+/* ============================================================
+   対戦画面の縦幅を約10%詰める（小さめのスマホ向け）
+   対戦画面（.turn-strip がある画面）にだけ効く
+   元に戻すときは app/layout.js の import "./compact.css" を消す
+   ============================================================ */
+
+/* ---- 相手・自分の情報パネル ---- */
+main:has(.turn-strip) .sme-panel-opp.py-2,
+main:has(.turn-strip) .sme-panel-me.py-2 {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+main:has(.turn-strip) .hp-orb {
+  min-width: 36px;
+  height: 36px;
+  font-size: 16px;
+}
+main:has(.turn-strip) .mana-dot {
+  width: 9px;
+  height: 9px;
+}
+
+/* ---- ターン表示の帯 ---- */
+main:has(.turn-strip) .turn-strip {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* ---- 相手の場・自分の場 ---- */
+main:has(.turn-strip) > .px-2.py-1 {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+main:has(.turn-strip) .sme-label.mb-0\.5 {
+  margin-bottom: 1px;
+}
+main:has(.turn-strip) .unit,
+main:has(.turn-strip) .unit-slot {
+  min-height: 64px;
+}
+main:has(.turn-strip) .unit {
+  padding-top: 3px;
+  padding-bottom: 2px;
+}
+main:has(.turn-strip) .unit .mt-1 {
+  margin-top: 2px;
+}
+main:has(.turn-strip) .unit-stat {
+  min-width: 22px;
+  height: 22px;
+  font-size: 12px;
+}
+
+/* ---- 相手の直前ターン ---- */
+main:has(.turn-strip) details.my-1 {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+main:has(.turn-strip) details summary.py-1\.5 {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* ---- ログ ---- */
+main:has(.turn-strip) .sme-log .h-16 {
+  height: 52px;
+}
+
+/* ---- 手札 ---- */
+main:has(.turn-strip) .px-2.pt-1 {
+  padding-top: 2px;
+}
+main:has(.turn-strip) .overflow-x-auto.pt-2.pb-2 {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+main:has(.turn-strip) .hand-card {
+  min-height: 88px;
+  padding: 5px;
+}
+main:has(.turn-strip) .hand-card .cost-gem {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+main:has(.turn-strip) .hand-card .mt-1 {
+  margin-top: 2px;
+}
+
+/* ---- 操作エリア ---- */
+main:has(.turn-strip) .px-3.pb-2 {
+  padding-bottom: 4px;
+}
+main:has(.turn-strip) div:has(> .phase-step) {
+  margin-bottom: 4px;
+}
+main:has(.turn-strip) .phase-step {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+main:has(.turn-strip) .sme-btn.\!py-2\.5 {
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+main:has(.turn-strip) .sme-panel.py-2.px-3 {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+/* ---- 画面下の余白 ---- */
+main:has(.turn-strip).pb-4 {
+  padding-bottom: 8px;
+}
