@@ -1081,24 +1081,6 @@ function GameScreen({
         </div>
       )}
 
-      {/* 相手の直前ターンの行動（タップで全件表示） */}
-      {lastOpp.length > 0 && (
-        <details className="mx-2 my-1 rounded-lg border border-rose-800/70 bg-rose-950/50 text-[11px]">
-          <summary className="px-3 py-1.5 cursor-pointer list-none flex items-center gap-2">
-            <span className="shrink-0 font-bold text-[10px] px-1.5 py-0.5 rounded bg-rose-700 text-white">
-              {oppLabel}の直前ターン
-            </span>
-            <span className="flex-1 truncate text-rose-100">{lastOpp[lastOpp.length - 1]}</span>
-            <span className="shrink-0 text-rose-300">{lastOpp.length}件 ▼</span>
-          </summary>
-          <ol className="px-3 pb-2 space-y-0.5 text-rose-100 list-decimal list-inside">
-            {lastOpp.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ol>
-        </details>
-      )}
-
       {/* ログ */}
       <div className="relative sme-log">
         <div ref={logRef} className="px-3 py-1 text-[10px] h-16 overflow-y-auto space-y-0.5">
@@ -1113,7 +1095,7 @@ function GameScreen({
       </div>
 
       {/* 自分の場 */}
-      <div className="px-2 py-1">
+      <div className="px-2 pt-1 pb-6">
         <div className="sme-label mb-0.5">自分の場</div>
         <div className="flex gap-1 flex-wrap justify-center">
           {me.field.map((u) => (
