@@ -1375,18 +1375,18 @@ function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onI
     foe ? "is-foe" : "",
     look,
     u.attacked ? "is-attacked" : "",
-    sick ? "opacity-60 grayscale" : "",
+sick ? "opacity-60 grayscale" : ""
   ].filter(Boolean).join(" ");
 
   return (
     <div className="unit-enter">
       <button onClick={onTap} className={cls}>
-        {/* 召喚酔い中のマーク */}
+        {/* 召喚酔い中のマーク（カード下辺の中央） */}
         {sick && (
           <span
             aria-hidden="true"
             title="召喚酔い"
-            className="absolute -top-2 -left-2 z-10 w-5 h-5 rounded-full bg-slate-700 border border-white/50 text-[10px] flex items-center justify-center shadow-lg"
+            className="absolute -bottom-2 left-1/2 -translate-x-1/2 z-10 px-1.5 h-4 rounded-full bg-slate-800/90 border border-white/40 text-[9px] leading-none flex items-center justify-center shadow"
           >
             💤
           </span>
