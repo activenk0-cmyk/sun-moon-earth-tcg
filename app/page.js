@@ -21,6 +21,9 @@ const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く�
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
 const APP_VERSION = (process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7); // 今動いているバージョン
 const REPORT_HISTORY = 10; // 不具合報告に含める「直前の状態」の数
+// スマホのブラウザで、背景ぼかし（backdrop-filter）の上の数字が描き直されないことがあるため、
+// HP・コストを表示する帯ではぼかしを切る
+const NO_BLUR = { backdropFilter: "none", WebkitBackdropFilter: "none" };
 const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
 
 const MODE_MSG = {
@@ -1456,9 +1459,9 @@ function GameScreen({
     <main className={`min-h-screen max-w-lg mx-auto text-sm ${mode ? "pb-20" : "pb-4"}`}>
       {/* 相手情報 + ターン表示 */}
       <div className="sticky top-0 z-10">
-        <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2">
+        <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2" style={NO_BLUR}>
           <div className="flex items-center gap-3">
-            <div className={`hp-orb opp ${opp.hp <= 3 ? "is-danger" : ""}`}>{opp.hp}</div>
+            <div key={`opp-hp-${opp.hp}`} className={`hp-orb opp ${opp.hp <= 3 ? "is-danger" : ""}`}>{opp.hp}</div>
             <div className="flex-1 min-w-0">
               <div className="flex justify-between items-center">
                 <span className="text-xs font-bold text-rose-200 truncate">
@@ -1581,9 +1584,9 @@ function GameScreen({
       </div>
 
       {/* 自分情報 */}
-      <div className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2">
+      <div className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2" style={NO_BLUR}>
         <div className="flex items-center gap-3">
-          <div className={`hp-orb me ${me.hp <= 3 ? "is-danger" : ""}`}>{me.hp}</div>
+          <div key={`me-hp-${me.hp}`} className={`hp-orb me ${me.hp <= 3 ? "is-danger" : ""}`}>{me.hp}</div>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-200">あなた</span>
