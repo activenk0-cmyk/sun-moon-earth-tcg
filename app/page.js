@@ -36,7 +36,7 @@ const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン
 /* ============ ユーティリティ ============ */
 const roomId = () =>
   Array.from({ length: 4 }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join("");
-const fxClass = (f) => (f === "sun" || f === "moon" || f === "earth" ? `fx-${f}` : "fx-none");
+const fxClass = (f) => (f === "sun" || f === "moon" || f === "earth" || f === "pluto" ? `fx-${f}` : "fx-none");
 const tierColor = (t) =>
   t === 1 ? "bg-amber-500 text-slate-900" : t === 2 ? "bg-sky-600 text-white" : "bg-slate-600 text-white";
 const isComplete = (sel) => !!sel && SLOTS.every((s) => sel[s]);
