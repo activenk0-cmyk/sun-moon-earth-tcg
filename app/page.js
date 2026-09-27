@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useRef } from "react";
 import { db } from "../lib/firebase";
-import { doc, getDocFromServer, updateDoc, onSnapshot, runTransaction } from "firebase/firestore";
+import {
+  doc, getDocFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection,
+} from "firebase/firestore";
 import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
@@ -17,6 +19,8 @@ const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
 const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
+const APP_VERSION = (process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7); // 今動いているバージョン
+const REPORT_HISTORY = 10; // 不具合報告に含める「直前の状態」の数
 const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
 
 const MODE_MSG = {
@@ -1155,8 +1159,54 @@ function GameScreen({
   const busy = useRef(false);
   const prevRef = useRef(null);
   const logRef = useRef(null);
+  const historyRef = useRef([]); // 不具合報告用：直前の状態の記録
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportMsg, setReportMsg] = useState("");
 
   const isCpu = !!cpuDeck;
+
+  // 状態が変わるたびに記録（新しい順ではなく古い順。最大 REPORT_HISTORY 件）
+  useEffect(() => {
+    if (!state) return;
+    try {
+      const json = JSON.stringify(state);
+      const h = historyRef.current;
+      if (h[h.length - 1] !== json) {
+        historyRef.current = [...h, json].slice(-REPORT_HISTORY);
+      }
+    } catch {
+      // 記録できなくてもゲームは続ける
+    }
+  }, [state]);
+
+  // 不具合報告を Firebase（reports コレクション）に保存
+  async function sendReport() {
+    if (reportBusy) return;
+    setReportBusy(true);
+    setReportMsg("");
+    try {
+      const ref = await addDoc(collection(db, "reports"), {
+        createdAt: new Date().toISOString(),
+        version: APP_VERSION,
+        mode: isCpu ? "cpu" : "room",
+        room: room || null,
+        myId: myId || null,
+        cpuDeck: cpuDeck ? cpuDeck.name || null : null,
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+        note: reportNote || "",
+        state: JSON.stringify(state),
+        history: historyRef.current,
+      });
+      setReportMsg(`送信しました（報告ID: ${ref.id}）`);
+      setReportNote("");
+    } catch (e) {
+      setReportMsg(`送信に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setReportBusy(false);
+    }
+  }
   const oppLabel = isCpu ? "CPU" : "相手";
 
   // ターン切り替わり時のバナー
@@ -1704,7 +1754,48 @@ function GameScreen({
             <div className="max-h-96 overflow-y-auto text-xs space-y-1">
               {(state.log || []).map(renderLog)}
             </div>
-            <button onClick={() => setShowLog(false)} className="sme-btn sme-btn-ghost sme-btn-sm mt-3">
+
+            {/* 不具合報告 */}
+            {!reportOpen ? (
+              <button
+                onClick={() => { setReportOpen(true); setReportMsg(""); }}
+                className="sme-btn sme-btn-ghost sme-btn-sm mt-3"
+              >
+                不具合を報告
+              </button>
+            ) : (
+              <div className="mt-3 border border-white/15 rounded-lg p-3">
+                <div className="text-xs text-slate-300 mb-2">
+                  今の盤面・ログと、直前{REPORT_HISTORY}回分の状態を送ります。何が起きたか書いてください（任意）。
+                </div>
+                <textarea
+                  value={reportNote}
+                  onChange={(e) => setReportNote(e.target.value)}
+                  rows={3}
+                  placeholder="例：カムラのHP+ログは出たのにアルベールが残っている"
+                  className="w-full text-sm text-slate-900 rounded p-2"
+                />
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={sendReport}
+                    disabled={reportBusy}
+                    className="sme-btn sme-btn-sm"
+                  >
+                    {reportBusy ? "送信中..." : "送信する"}
+                  </button>
+                  <button
+                    onClick={() => { setReportOpen(false); setReportMsg(""); }}
+                    className="sme-btn sme-btn-ghost sme-btn-sm"
+                  >
+                    やめる
+                  </button>
+                </div>
+              </div>
+            )}
+            {reportMsg && <div className="text-xs text-amber-300 mt-2 break-all">{reportMsg}</div>}
+
+            <div className="text-[10px] text-slate-500 mt-3">ver: {APP_VERSION}</div>
+            <button onClick={() => setShowLog(false)} className="sme-btn sme-btn-ghost sme-btn-sm mt-2">
               閉じる
             </button>
           </div>
