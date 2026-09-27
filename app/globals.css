@@ -336,7 +336,7 @@ body > * { position: relative; z-index: 1; }
 .fx-moon  { --fx: var(--moon);  --fx-deep: var(--moon-deep);  --fx-rgb: 154, 166, 255; }
 .fx-earth { --fx: var(--earth); --fx-deep: var(--earth-deep); --fx-rgb: 63, 224, 160; }
 .fx-none  { --fx: #9aa0b8;      --fx-deep: #3a3e52;           --fx-rgb: 154, 160, 184; }
-
+.fx-pluto { --fx: #d86cff;      --fx-deep: #7a1fa0;           --fx-rgb: 216, 108, 255; }
 .fx-text { color: var(--fx); text-shadow: 0 0 8px rgba(var(--fx-rgb), 0.5); }
 
 /* ============================================================
