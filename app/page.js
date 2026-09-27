@@ -19,7 +19,7 @@ const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字�
 const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
 
 const MODE_MSG = {
-  damage3: "3ダメージを与える相手キャラを選んでください",
+  damage3: "4ダメージを与える相手キャラを選んでください",
   destroy: "破壊する相手キャラを選んでください",
   destroyDraw: "破壊する相手キャラを選んでください",
   crest: "4ダメージを与える相手キャラを選んでください",
