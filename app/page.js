@@ -7,6 +7,7 @@ import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
 import { DECKS, pickDeck } from "../lib/decks";
+import NewsButton from "./NewsButton";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -698,6 +699,7 @@ export default function Home() {
   if (screen === "menu") {
     return (
       <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col items-center justify-center text-center">
+                 <NewsButton />
         <div className="sme-emblems mb-8">
           <div className="sme-emblem sun">☀</div>
           <div className="sme-emblem moon">☾</div>
