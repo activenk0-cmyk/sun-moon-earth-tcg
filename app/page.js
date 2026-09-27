@@ -1480,9 +1480,11 @@ function GameScreen({
             </button>
           ) : (
             <div className="sme-panel py-1.5 text-center text-[11px] text-slate-400">
-              {ao.defender
-                ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
-                : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
+                 {ao.defender
+                   ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
+                   : E.hasKw(me.field.find((x) => x.uid === sel), "no_attack_player")
+                   ? "このキャラは相手プレイヤーを攻撃できません"
+                   : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
             </div>
           )}
         </div>
