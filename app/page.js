@@ -379,6 +379,8 @@ export default function Home() {
   const [authNick, setAuthNick] = useState("");
   const [authMsg, setAuthMsg] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [nickEdit, setNickEdit] = useState(false); // ニックネーム変更中
+  const [nickInput, setNickInput] = useState("");
   const unsubRef = useRef(null);
   const stateRef = useRef(null);
 
@@ -551,7 +553,33 @@ export default function Home() {
     }
   }
 
+  /* ---- ニックネーム変更 ---- */
+  async function saveNickname() {
+    if (!user) return;
+    const nick = nickInput.trim();
+    if (!nick) return setAuthMsg("ニックネームを入力してください");
+    if (nick.length > 12) return setAuthMsg("ニックネームは12文字以内にしてください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      await setDoc(
+        doc(db, "players", user.uid),
+        { id: user.id, nickname: nick, updatedAt: new Date().toISOString() },
+        { merge: true }
+      );
+      setUser((prev) => (prev ? { ...prev, nickname: nick } : prev));
+      setNickEdit(false);
+      setAuthMsg("ニックネームを変更しました");
+    } catch (e) {
+      setAuthMsg(`保存に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   async function logout() {
+    setNickEdit(false);
+    setAuthMsg("");
     try {
       await signOut(auth);
     } catch {
@@ -974,9 +1002,17 @@ export default function Home() {
                 <span className="text-amber-300 text-sm font-bold">{user.nickname || "（名前なし）"}</span>
                 <span className="text-slate-400 ml-2">ID: {user.id}</span>
               </span>
-              <button onClick={logout} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
-                ログアウト
-              </button>
+              <span className="flex gap-1">
+                <button
+                  onClick={() => { setNickEdit(true); setNickInput(user.nickname || ""); setAuthMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+                >
+                  名前変更
+                </button>
+                <button onClick={logout} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+                  ログアウト
+                </button>
+              </span>
             </div>
           ) : (
             <div className="mb-3 text-slate-400">
@@ -995,6 +1031,30 @@ export default function Home() {
               現在 {(streaks.room && streaks.room.cur) || 0}連勝 / 最高 {(streaks.room && streaks.room.best) || 0}連勝
             </span>
           </div>
+
+          {user && nickEdit && (
+            <div className="flex flex-col gap-2 mt-3">
+              <div className="text-slate-200 text-xs font-bold">ニックネーム変更</div>
+              <input
+                value={nickInput}
+                onChange={(e) => setNickInput(e.target.value)}
+                placeholder="新しいニックネーム（12文字以内）"
+                maxLength={12}
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              <div className="flex gap-2">
+                <button disabled={authBusy} onClick={saveNickname} className="sme-btn sme-btn-moon sme-btn-sm">
+                  {authBusy ? "保存中…" : "保存する"}
+                </button>
+                <button
+                  onClick={() => { setNickEdit(false); setAuthMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
 
           {!user && !authMode && (
             <div className="flex gap-2 mt-3">
