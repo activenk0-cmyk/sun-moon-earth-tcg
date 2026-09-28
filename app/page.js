@@ -58,6 +58,55 @@ function loadSave() {
   }
 }
 
+/* ============ 連勝記録（CPU戦とルームマッチで別々に保存） ============ */
+const STREAK_KEY = "sme-streak-v1";
+
+function loadStreaks() {
+  try {
+    const raw = localStorage.getItem(STREAK_KEY);
+    const v = raw ? JSON.parse(raw) : {};
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+// 1試合の結果を記録する（同じ試合を2回数えないよう、試合ごとのキーで判定）
+// mode: "cpu" / "room"、key: 試合を見分ける文字列、win: 勝ったかどうか
+function recordStreak(mode, key, win) {
+  const all = loadStreaks();
+  const cur = all[mode] || { cur: 0, best: 0, keys: [] };
+  const keys = Array.isArray(cur.keys) ? cur.keys : [];
+  if (!key || keys.includes(key)) {
+    return { cur: cur.cur || 0, best: cur.best || 0, isNewBest: !!cur.lastNewBest && cur.lastKey === key };
+  }
+  const nextCur = win ? (cur.cur || 0) + 1 : 0;
+  const prevBest = cur.best || 0;
+  const nextBest = Math.max(prevBest, nextCur);
+  const isNewBest = win && nextCur > prevBest && nextCur >= 2;
+  all[mode] = {
+    cur: nextCur,
+    best: nextBest,
+    keys: [...keys, key].slice(-30),
+    lastKey: key,
+    lastNewBest: isNewBest,
+  };
+  try {
+    localStorage.setItem(STREAK_KEY, JSON.stringify(all));
+  } catch {
+    // 保存できなくてもゲームは続ける
+  }
+  return { cur: nextCur, best: nextBest, isNewBest };
+}
+
+// 試合を見分けるキー
+function gameKey(state, room) {
+  if (!state) return null;
+  if (room) return `${room}:${state.host || ""}:${state.guest || ""}:${state.gameNo || 0}`;
+  if (state.gameId) return state.gameId;
+  return `legacy:${state.turnCount || 0}:${String((state.log || [])[0] || "")}`;
+}
+
 // CPUの戦い方を、lib/cpu.js に存在するものから選ぶ
 function resolveStyle(wants) {
   const list = Array.isArray(wants) ? wants : [wants];
@@ -456,6 +505,13 @@ export default function Home() {
 
   /* ---- リタイア ---- */
   async function retire() {
+    // リタイアは負けとして連勝記録をリセット
+    if (screen === "cpu" && cpuState && cpuState.phase === "play" && !cpuState.winner) {
+      recordStreak("cpu", gameKey(cpuState, null), false);
+    }
+    if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
+      recordStreak("room", gameKey(state, room), false);
+    }
     // オンライン対戦中なら相手の勝ちにする
     if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
       const oppId = E.otherId(state, myId);
@@ -684,16 +740,17 @@ export default function Home() {
     const base = DECKS.length ? pickDeck() : pickCpuDeck();
     const d = { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
     setCpuDeck(d);
-    setCpuState(
-      E.createLocalGame({
+    setCpuState({
+      ...E.createLocalGame({
         p1: YOU_ID,
         p2: CPU_ID,
         sel1: selection,
         sel2: d.selection,
         first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
         log: [`CPUのデッキ: ${d.name}（Tier${d.tier}）`],
-      })
-    );
+      }),
+      gameId: `cpu:${E.uid()}:${Date.now()}`, // 連勝記録用の試合ID
+    });
     setDetail(null);
     setMatchMode("cpu");
     setScreen("cpu");
@@ -1170,6 +1227,15 @@ function GameScreen({
 
   const isCpu = !!cpuDeck;
 
+  // 決着したら連勝記録を更新（CPU戦とルームマッチは別々）
+  const [streak, setStreak] = useState(null);
+  const endKey = state && state.phase === "end" ? gameKey(state, isCpu ? null : room) : null;
+  useEffect(() => {
+    if (!endKey || !state || !state.winner) return;
+    setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endKey]);
+
   // 状態が変わるたびに記録（新しい順ではなく古い順。最大 REPORT_HISTORY 件）
   useEffect(() => {
     if (!state) return;
@@ -1329,6 +1395,15 @@ function GameScreen({
           {win ? "VICTORY" : "DEFEAT"}
         </h1>
         <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
+        {win && streak && streak.cur > 0 && (
+          <div className="sme-panel mb-6 p-3">
+            <div className="text-xs text-slate-400 mb-1">{isCpu ? "CPU戦" : "ルームマッチ"}</div>
+            <div className="text-2xl font-bold text-amber-300">🔥 {streak.cur}連勝中！</div>
+            <div className="text-xs text-slate-300 mt-1">
+              {streak.isNewBest ? "最高記録更新！" : `最高記録: ${streak.best}連勝`}
+            </div>
+          </div>
+        )}
         {isCpu && (
           <div className="text-sm text-slate-300 mb-4">
             CPUのデッキ: {cpuDeck.name}（Tier{cpuDeck.tier}）
