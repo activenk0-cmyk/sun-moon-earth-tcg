@@ -23,8 +23,8 @@ const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
 const APP_VERSION = (process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7); // 今動いているバージョン
-const REPORT_HISTORY = 10;
-const MAX_MY_DECKS = 20; // 保存できるデッキの数 // 不具合報告に含める「直前の状態」の数
+const REPORT_HISTORY = 10; // 不具合報告に含める「直前の状態」の数
+const MAX_MY_DECKS = 20; // 保存できるデッキの数
 // スマホのブラウザで、背景ぼかし（backdrop-filter）の上の数字が描き直されないことがあるため、
 // HP・コストを表示する帯ではぼかしを切る
 const NO_BLUR = { backdropFilter: "none", WebkitBackdropFilter: "none" };
