@@ -1,10 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { db } from "../lib/firebase";
+import { db, auth } from "../lib/firebase";
 import {
-  doc, getDocFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection,
+  doc, getDocFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection, setDoc,
 } from "firebase/firestore";
+import {
+  onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
+} from "firebase/auth";
 import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
@@ -59,16 +62,53 @@ function loadSave() {
 }
 
 /* ============ 連勝記録（CPU戦とルームマッチで別々に保存） ============ */
+// ログイン中はアカウントごとに端末へ保存し、Firebase（players コレクション）にも保存する
+// ログインしていないときは、この端末だけに保存する
 const STREAK_KEY = "sme-streak-v1";
+let currentUid = null; // ログイン中のアカウント（Firebaseの内部ID）
 
-function loadStreaks() {
+const streakKeyFor = (uid) => (uid ? `${STREAK_KEY}:${uid}` : STREAK_KEY);
+
+function loadStreaks(uid = currentUid) {
   try {
-    const raw = localStorage.getItem(STREAK_KEY);
+    const raw = localStorage.getItem(streakKeyFor(uid));
     const v = raw ? JSON.parse(raw) : {};
     return v && typeof v === "object" ? v : {};
   } catch {
     return {};
   }
+}
+
+function saveStreaksLocal(all, uid = currentUid) {
+  try {
+    localStorage.setItem(streakKeyFor(uid), JSON.stringify(all || {}));
+  } catch {
+    // 保存できなくてもゲームは続ける
+  }
+}
+
+async function pushStreaks(uid, all) {
+  if (!uid) return;
+  try {
+    await setDoc(
+      doc(db, "players", uid),
+      { streaks: all || {}, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+  } catch {
+    // 保存できなくてもゲームは続ける（端末には残っている）
+  }
+}
+
+// 端末の記録とFirebaseの記録を、モードごとに新しい方でまとめる
+function mergeStreaks(local, remote) {
+  const out = { ...(local || {}) };
+  for (const m of ["cpu", "room"]) {
+    const a = (local || {})[m];
+    const b = (remote || {})[m];
+    if (b && (!a || (b.at || "") > (a.at || ""))) out[m] = b;
+  }
+  return out;
 }
 
 // 1試合の結果を記録する（同じ試合を2回数えないよう、試合ごとのキーで判定）
@@ -90,13 +130,32 @@ function recordStreak(mode, key, win) {
     keys: [...keys, key].slice(-30),
     lastKey: key,
     lastNewBest: isNewBest,
+    at: new Date().toISOString(),
   };
-  try {
-    localStorage.setItem(STREAK_KEY, JSON.stringify(all));
-  } catch {
-    // 保存できなくてもゲームは続ける
-  }
+  saveStreaksLocal(all);
+  pushStreaks(currentUid, all);
   return { cur: nextCur, best: nextBest, isNewBest };
+}
+
+/* ============ プレイヤーアカウント ============ */
+// プレイヤーID：英小文字1文字＋1〜99（a1〜z99）
+const PLAYER_ID_RE = /^[a-z]([1-9]|[1-9][0-9])$/;
+const PIN_RE = /^[0-9]{3}$/;
+// Firebaseの仕組み上、IDとパスワードを内部用の形に変換して使う（実在のメールではない）
+const idToEmail = (id) => `${id}@players.sme-tcg.app`;
+const pinToPassword = (pin) => `sme-${pin}-tcg`;
+
+function authErrorText(e) {
+  const c = e?.code || "";
+  if (c === "auth/email-already-in-use") return "そのプレイヤーIDはすでに使われています";
+  if (
+    c === "auth/invalid-credential" || c === "auth/wrong-password" ||
+    c === "auth/user-not-found" || c === "auth/invalid-login-credentials"
+  ) return "プレイヤーIDかパスワードが違います";
+  if (c === "auth/too-many-requests") return "失敗が続いたため、しばらく待ってからお試しください";
+  if (c === "auth/operation-not-allowed") return "ログイン機能がまだ有効になっていません（管理者の設定が必要）";
+  if (c === "auth/network-request-failed") return "通信に失敗しました。電波の良い所でお試しください";
+  return `エラーが発生しました: ${c || e?.message || "不明"}`;
 }
 
 // 試合を見分けるキー
@@ -311,6 +370,15 @@ export default function Home() {
   const [detail, setDetail] = useState(null);
   const [msg, setMsg] = useState("");
   const [lobbyBusy, setLobbyBusy] = useState(false);
+  // アカウント
+  const [user, setUser] = useState(null); // { uid, id, nickname }
+  const [streaks, setStreaks] = useState({});
+  const [authMode, setAuthMode] = useState(null); // null / "login" / "signup"
+  const [authId, setAuthId] = useState("");
+  const [authPin, setAuthPin] = useState("");
+  const [authNick, setAuthNick] = useState("");
+  const [authMsg, setAuthMsg] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const unsubRef = useRef(null);
   const stateRef = useRef(null);
 
@@ -384,6 +452,112 @@ export default function Home() {
       // 保存できなくてもゲームは続ける
     }
   }, [loaded, myId, screen, matchMode, selection, room, cpuState, cpuDeck]);
+
+  // ログイン状態の監視
+  useEffect(() => {
+    const off = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        currentUid = null;
+        setUser(null);
+        setStreaks(loadStreaks(null));
+        return;
+      }
+      currentUid = u.uid;
+      const id = (u.email || "").split("@")[0];
+      setUser((prev) => ({ uid: u.uid, id, nickname: prev && prev.uid === u.uid ? prev.nickname : "" }));
+      setStreaks(loadStreaks(u.uid));
+      try {
+        const snap = await getDocFromServer(doc(db, "players", u.uid));
+        const data = snap.exists() ? snap.data() : {};
+        const merged = mergeStreaks(loadStreaks(u.uid), data.streaks || {});
+        saveStreaksLocal(merged, u.uid);
+        setStreaks(merged);
+        setUser((prev) => ({
+          uid: u.uid,
+          id,
+          nickname: data.nickname || (prev && prev.uid === u.uid ? prev.nickname : ""),
+        }));
+        if (JSON.stringify(merged) !== JSON.stringify(data.streaks || {})) {
+          await pushStreaks(u.uid, merged);
+        }
+      } catch {
+        // 通信できなくても端末の記録で続ける
+      }
+    });
+    return () => off();
+  }, []);
+
+  // タイトルに戻ったら最新の記録を表示
+  useEffect(() => {
+    if (screen === "menu") setStreaks(loadStreaks());
+  }, [screen]);
+
+  function openAuth(mode) {
+    setAuthMode(mode);
+    setAuthId("");
+    setAuthPin("");
+    setAuthNick("");
+    setAuthMsg("");
+  }
+
+  /* ---- 新規登録 ---- */
+  async function signup() {
+    const id = authId.trim().toLowerCase();
+    const nick = authNick.trim();
+    if (!PLAYER_ID_RE.test(id)) return setAuthMsg("プレイヤーIDは a1〜z99 の形で入力してください（例: k7, m42）");
+    if (!PIN_RE.test(authPin)) return setAuthMsg("パスワードは数字3桁で入力してください");
+    if (!nick) return setAuthMsg("ニックネームを入力してください");
+    if (nick.length > 12) return setAuthMsg("ニックネームは12文字以内にしてください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      // ログイン前にこの端末で遊んだ記録を引き継ぐ
+      const guest = loadStreaks(null);
+      const cred = await createUserWithEmailAndPassword(auth, idToEmail(id), pinToPassword(authPin));
+      const uid = cred.user.uid;
+      currentUid = uid;
+      saveStreaksLocal(guest, uid);
+      await setDoc(doc(db, "players", uid), {
+        id,
+        nickname: nick,
+        streaks: guest,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      setUser({ uid, id, nickname: nick });
+      setStreaks(guest);
+      setAuthMode(null);
+    } catch (e) {
+      setAuthMsg(authErrorText(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  /* ---- ログイン ---- */
+  async function login() {
+    const id = authId.trim().toLowerCase();
+    if (!PLAYER_ID_RE.test(id)) return setAuthMsg("プレイヤーIDは a1〜z99 の形で入力してください");
+    if (!PIN_RE.test(authPin)) return setAuthMsg("パスワードは数字3桁で入力してください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      await signInWithEmailAndPassword(auth, idToEmail(id), pinToPassword(authPin));
+      setAuthMode(null);
+    } catch (e) {
+      setAuthMsg(authErrorText(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await signOut(auth);
+    } catch {
+      // 失敗しても画面はそのまま
+    }
+  }
 
   // 最新のオンライン状態を覚えておく（定期取得で使う）
   useEffect(() => {
@@ -791,6 +965,98 @@ export default function Home() {
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
           10のコスト枠から各1種を選び、4枚ずつ計40枚のデッキを作ります。
           友達とのルームマッチと、CPU対戦が遊べます。
+        </div>
+
+        <div className="sme-panel mt-4 p-4 text-[11px] text-slate-300 w-full max-w-xs text-left">
+          {user ? (
+            <div className="flex justify-between items-center mb-3">
+              <span>
+                <span className="text-amber-300 text-sm font-bold">{user.nickname || "（名前なし）"}</span>
+                <span className="text-slate-400 ml-2">ID: {user.id}</span>
+              </span>
+              <button onClick={logout} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+                ログアウト
+              </button>
+            </div>
+          ) : (
+            <div className="mb-3 text-slate-400">
+              ログインすると連勝記録がアカウントに保存され、別の端末でも引き継げます
+            </div>
+          )}
+          <div className="flex justify-between mb-1">
+            <span>CPU戦</span>
+            <span>
+              現在 {(streaks.cpu && streaks.cpu.cur) || 0}連勝 / 最高 {(streaks.cpu && streaks.cpu.best) || 0}連勝
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>ルームマッチ</span>
+            <span>
+              現在 {(streaks.room && streaks.room.cur) || 0}連勝 / 最高 {(streaks.room && streaks.room.best) || 0}連勝
+            </span>
+          </div>
+
+          {!user && !authMode && (
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => openAuth("login")} className="sme-btn sme-btn-moon sme-btn-sm">
+                ログイン
+              </button>
+              <button onClick={() => openAuth("signup")} className="sme-btn sme-btn-ghost sme-btn-sm">
+                新規登録
+              </button>
+            </div>
+          )}
+
+          {!user && authMode && (
+            <div className="flex flex-col gap-2 mt-3">
+              <div className="text-slate-200 text-xs font-bold">
+                {authMode === "signup" ? "新規登録" : "ログイン"}
+              </div>
+              <input
+                value={authId}
+                onChange={(e) => setAuthId(e.target.value)}
+                placeholder="プレイヤーID（a1〜z99）"
+                autoCapitalize="none"
+                autoCorrect="off"
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              <input
+                value={authPin}
+                onChange={(e) => setAuthPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
+                placeholder="パスワード（数字3桁）"
+                type="password"
+                inputMode="numeric"
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              {authMode === "signup" && (
+                <>
+                  <input
+                    value={authNick}
+                    onChange={(e) => setAuthNick(e.target.value)}
+                    placeholder="ニックネーム（12文字以内）"
+                    maxLength={12}
+                    className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+                  />
+                  <div className="text-[10px] text-amber-200">
+                    ※ プレイヤーIDとパスワードは忘れないようにメモしてください（再発行できません）
+                  </div>
+                </>
+              )}
+              <div className="flex gap-2">
+                <button
+                  disabled={authBusy}
+                  onClick={authMode === "signup" ? signup : login}
+                  className="sme-btn sme-btn-moon sme-btn-sm"
+                >
+                  {authBusy ? "確認中…" : authMode === "signup" ? "登録する" : "ログイン"}
+                </button>
+                <button onClick={() => setAuthMode(null)} className="sme-btn sme-btn-ghost sme-btn-sm">
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
+          {authMsg && <div className="mt-2 text-amber-200">{authMsg}</div>}
         </div>
       </main>
     );
