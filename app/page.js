@@ -23,7 +23,8 @@ const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
 const APP_VERSION = (process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7); // 今動いているバージョン
-const REPORT_HISTORY = 10; // 不具合報告に含める「直前の状態」の数
+const REPORT_HISTORY = 10;
+const MAX_MY_DECKS = 20; // 保存できるデッキの数 // 不具合報告に含める「直前の状態」の数
 // スマホのブラウザで、背景ぼかし（backdrop-filter）の上の数字が描き直されないことがあるため、
 // HP・コストを表示する帯ではぼかしを切る
 const NO_BLUR = { backdropFilter: "none", WebkitBackdropFilter: "none" };
@@ -381,6 +382,12 @@ export default function Home() {
   const [authBusy, setAuthBusy] = useState(false);
   const [nickEdit, setNickEdit] = useState(false); // ニックネーム変更中
   const [nickInput, setNickInput] = useState("");
+  // 保存デッキ（ログイン時のみ・アカウントに保存）
+  const [myDecks, setMyDecks] = useState([]);
+  const [deckSaveOpen, setDeckSaveOpen] = useState(false);
+  const [deckName, setDeckName] = useState("");
+  const [deckMsg, setDeckMsg] = useState("");
+  const [deckBusy, setDeckBusy] = useState(false);
   const unsubRef = useRef(null);
   const stateRef = useRef(null);
 
@@ -461,6 +468,7 @@ export default function Home() {
       if (!u) {
         currentUid = null;
         setUser(null);
+        setMyDecks([]);
         setStreaks(loadStreaks(null));
         return;
       }
@@ -474,6 +482,7 @@ export default function Home() {
         const merged = mergeStreaks(loadStreaks(u.uid), data.streaks || {});
         saveStreaksLocal(merged, u.uid);
         setStreaks(merged);
+        setMyDecks(Array.isArray(data.decks) ? data.decks : []);
         setUser((prev) => ({
           uid: u.uid,
           id,
@@ -577,6 +586,71 @@ export default function Home() {
     }
   }
 
+  /* ---- デッキ保存 ---- */
+  function openDeckSave() {
+    setDeckMsg("");
+    if (!user) {
+      setDeckMsg("デッキの保存はログイン中のみ使えます（タイトル画面からログインしてください）");
+      return;
+    }
+    if (!SLOTS.every((s) => selection[s])) {
+      setDeckMsg("すべての枠を選んでから保存してください");
+      return;
+    }
+    setDeckName("");
+    setDeckSaveOpen(true);
+  }
+
+  async function writeDecks(next) {
+    await setDoc(
+      doc(db, "players", user.uid),
+      { decks: next, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+    setMyDecks(next);
+  }
+
+  async function saveDeck() {
+    if (!user) return;
+    const name = deckName.trim();
+    if (!name) return setDeckMsg("デッキ名を入力してください");
+    if (name.length > 16) return setDeckMsg("デッキ名は16文字以内にしてください");
+    const same = myDecks.find((d) => d.name === name);
+    if (!same && myDecks.length >= MAX_MY_DECKS) {
+      return setDeckMsg(`保存できるのは${MAX_MY_DECKS}個までです（不要なデッキを削除してください）`);
+    }
+    const sel = {};
+    SLOTS.forEach((s) => { sel[s] = selection[s]; });
+    const entry = { id: same ? same.id : `d${Date.now()}`, name, selection: sel, savedAt: new Date().toISOString() };
+    const next = same ? myDecks.map((d) => (d.id === same.id ? entry : d)) : [...myDecks, entry];
+    setDeckBusy(true);
+    setDeckMsg("");
+    try {
+      await writeDecks(next);
+      setDeckSaveOpen(false);
+      setDeckMsg(same ? `「${name}」を上書き保存しました` : `「${name}」を保存しました`);
+    } catch (e) {
+      setDeckMsg(`保存に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setDeckBusy(false);
+    }
+  }
+
+  async function deleteDeck(d) {
+    if (!user || !d) return;
+    if (typeof window !== "undefined" && !window.confirm(`「${d.name}」を削除しますか？`)) return;
+    setDeckBusy(true);
+    setDeckMsg("");
+    try {
+      await writeDecks(myDecks.filter((x) => x.id !== d.id));
+      setDeckMsg(`「${d.name}」を削除しました`);
+    } catch (e) {
+      setDeckMsg(`削除に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setDeckBusy(false);
+    }
+  }
+
   async function logout() {
     setNickEdit(false);
     setAuthMsg("");
@@ -642,6 +716,7 @@ export default function Home() {
 
   const deckComplete = SLOTS.every((s) => selection[s]);
   const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
+  const matchedMyDeck = myDecks.find((d) => d.selection && SLOTS.every((s) => d.selection[s] === selection[s]));
 
   /* ---- ルームの様子（デッキ選択画面用） ---- */
   const lobby = matchMode === "room" ? state : null;
@@ -1227,6 +1302,29 @@ export default function Home() {
         <div className="mb-6">
           <div className="sme-label mb-2">RECOMMENDED DECKS</div>
           <div className="flex gap-2 overflow-x-auto pb-2">
+            <button
+              onClick={openDeckSave}
+              disabled={locked}
+              title="今のデッキを保存"
+              className="sme-btn sme-btn-sm shrink-0 !w-auto text-[13px] font-bold sme-btn-moon px-3"
+            >
+              ＋
+            </button>
+            {myDecks.map((d) => {
+              const on = matchedMyDeck?.id === d.id;
+              return (
+                <button
+                  key={d.id}
+                  onClick={() => { if (!locked) setSelection({ ...d.selection }); }}
+                  className={`sme-btn sme-btn-sm shrink-0 !w-auto text-[11px] ${on ? "sme-btn-sun" : "sme-btn-ghost"}`}
+                >
+                  <span className="inline-block text-[9px] font-bold px-1 rounded mr-1 bg-emerald-600 text-white">
+                    MY
+                  </span>
+                  {d.name}
+                </button>
+              );
+            })}
             {PRESETS.map((d) => {
               const on = matchedPreset?.id === d.id;
               return (
@@ -1243,6 +1341,44 @@ export default function Home() {
               );
             })}
           </div>
+          {deckSaveOpen && (
+            <div className="sme-panel mt-2 p-3 flex flex-col gap-2">
+              <div className="text-xs font-bold text-slate-200">今のデッキを保存</div>
+              <input
+                value={deckName}
+                onChange={(e) => setDeckName(e.target.value)}
+                placeholder="デッキ名（16文字以内）"
+                maxLength={16}
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              <div className="text-[10px] text-slate-400">※ 同じ名前のデッキがあるときは上書きされます</div>
+              <div className="flex gap-2">
+                <button disabled={deckBusy} onClick={saveDeck} className="sme-btn sme-btn-moon sme-btn-sm">
+                  {deckBusy ? "保存中…" : "保存する"}
+                </button>
+                <button
+                  onClick={() => { setDeckSaveOpen(false); setDeckMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
+          {deckMsg && <div className="mt-2 text-[11px] text-amber-200">{deckMsg}</div>}
+          {matchedMyDeck && (
+            <div className="sme-panel mt-2 p-3 flex items-center gap-2">
+              <span className="text-[10px] font-bold px-1.5 rounded bg-emerald-600 text-white">MY</span>
+              <span className="text-sm font-bold">{matchedMyDeck.name}</span>
+              <button
+                disabled={deckBusy || locked}
+                onClick={() => deleteDeck(matchedMyDeck)}
+                className="sme-btn sme-btn-ghost sme-btn-sm !w-auto ml-auto text-[11px]"
+              >
+                削除
+              </button>
+            </div>
+          )}
           {matchedPreset && (
             <div className="sme-panel mt-2 p-3">
               <div className="flex items-center gap-2 mb-1">
