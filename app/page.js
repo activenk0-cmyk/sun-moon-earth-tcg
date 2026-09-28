@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { db, auth } from "../lib/firebase";
 import {
-  doc, getDocFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection, setDoc,
+  doc, getDocFromServer, getDocsFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection, setDoc,
 } from "firebase/firestore";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
@@ -143,6 +143,30 @@ function recordStreak(mode, key, win) {
 const PLAYER_ID_RE = /^[a-z]([1-9]|[1-9][0-9])$/;
 const PIN_RE = /^[0-9]{3}$/;
 // Firebaseの仕組み上、IDとパスワードを内部用の形に変換して使う（実在のメールではない）
+// a1, a2, … a99, b1, … z99 の順に並べたID一覧
+const ALL_PLAYER_IDS = Array.from({ length: 26 * 99 }, (_, i) =>
+  `${String.fromCharCode(97 + Math.floor(i / 99))}${(i % 99) + 1}`
+);
+
+// 使用済みのプレイヤーIDを取得（playerIds コレクション）
+async function fetchUsedIds() {
+  const snap = await getDocsFromServer(collection(db, "playerIds"));
+  return new Set(snap.docs.map((d) => d.id));
+}
+
+const firstFreeId = (used) => ALL_PLAYER_IDS.find((id) => !used.has(id)) || null;
+
+// 自分のIDを使用済みとして登録（まだ無ければ）
+async function claimPlayerId(id, uid) {
+  try {
+    const ref = doc(db, "playerIds", id);
+    const snap = await getDocFromServer(ref);
+    if (!snap.exists()) await setDoc(ref, { uid, createdAt: new Date().toISOString() });
+  } catch {
+    // 失敗しても、ログイン側でIDの重複は防がれている
+  }
+}
+
 const idToEmail = (id) => `${id}@players.sme-tcg.app`;
 const pinToPassword = (pin) => `sme-${pin}-tcg`;
 
@@ -474,6 +498,7 @@ export default function Home() {
       }
       currentUid = u.uid;
       const id = (u.email || "").split("@")[0];
+      claimPlayerId(id, u.uid); // 以前からのアカウントも使用済みIDとして登録
       setUser((prev) => ({ uid: u.uid, id, nickname: prev && prev.uid === u.uid ? prev.nickname : "" }));
       setStreaks(loadStreaks(u.uid));
       try {
@@ -509,13 +534,21 @@ export default function Home() {
     setAuthPin("");
     setAuthNick("");
     setAuthMsg("");
+    if (mode === "signup") {
+      // 空いているいちばん小さいIDを表示
+      setAuthId("…");
+      fetchUsedIds()
+        .then((used) => setAuthId(firstFreeId(used) || ""))
+        .catch((e) => {
+          setAuthId("");
+          setAuthMsg(`IDの確認に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+        });
+    }
   }
 
   /* ---- 新規登録 ---- */
   async function signup() {
-    const id = authId.trim().toLowerCase();
     const nick = authNick.trim();
-    if (!PLAYER_ID_RE.test(id)) return setAuthMsg("プレイヤーIDは a1〜z99 の形で入力してください（例: k7, m42）");
     if (!PIN_RE.test(authPin)) return setAuthMsg("パスワードは数字3桁で入力してください");
     if (!nick) return setAuthMsg("ニックネームを入力してください");
     if (nick.length > 12) return setAuthMsg("ニックネームは12文字以内にしてください");
@@ -524,8 +557,25 @@ export default function Home() {
     try {
       // ログイン前にこの端末で遊んだ記録を引き継ぐ
       const guest = loadStreaks(null);
-      const cred = await createUserWithEmailAndPassword(auth, idToEmail(id), pinToPassword(authPin));
+      // 空いているいちばん小さいIDで登録（同時に誰かが取っていたら次のIDへ）
+      const used = await fetchUsedIds();
+      let id = null;
+      let cred = null;
+      for (let tries = 0; tries < 30; tries++) {
+        const cand = firstFreeId(used);
+        if (!cand) throw new Error("空いているプレイヤーIDがありません");
+        try {
+          cred = await createUserWithEmailAndPassword(auth, idToEmail(cand), pinToPassword(authPin));
+          id = cand;
+          break;
+        } catch (e) {
+          if (e?.code !== "auth/email-already-in-use") throw e;
+          used.add(cand);
+        }
+      }
+      if (!cred) throw new Error("プレイヤーIDの割り当てに失敗しました。もう一度お試しください");
       const uid = cred.user.uid;
+      await claimPlayerId(id, uid);
       currentUid = uid;
       saveStreaksLocal(guest, uid);
       await setDoc(doc(db, "players", uid), {
@@ -538,6 +588,7 @@ export default function Home() {
       setUser({ uid, id, nickname: nick });
       setStreaks(guest);
       setAuthMode(null);
+      setAuthMsg(`登録しました！ あなたのプレイヤーIDは「${id}」です。パスワードと一緒に必ずメモしてください。`);
     } catch (e) {
       setAuthMsg(authErrorText(e));
     } finally {
@@ -1147,14 +1198,21 @@ export default function Home() {
               <div className="text-slate-200 text-xs font-bold">
                 {authMode === "signup" ? "新規登録" : "ログイン"}
               </div>
-              <input
-                value={authId}
-                onChange={(e) => setAuthId(e.target.value)}
-                placeholder="プレイヤーID（a1〜z99）"
-                autoCapitalize="none"
-                autoCorrect="off"
-                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
-              />
+              {authMode === "signup" ? (
+                <div className="px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm">
+                  プレイヤーID：<span className="font-bold text-amber-300">{authId || "―"}</span>
+                  <span className="text-[10px] text-slate-400 ml-2">（自動で決まります）</span>
+                </div>
+              ) : (
+                <input
+                  value={authId}
+                  onChange={(e) => setAuthId(e.target.value)}
+                  placeholder="プレイヤーID（a1〜z99）"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+                />
+              )}
               <input
                 value={authPin}
                 onChange={(e) => setAuthPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
