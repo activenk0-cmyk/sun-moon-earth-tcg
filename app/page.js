@@ -13,6 +13,7 @@ import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
 import { DECKS, pickDeck } from "../lib/decks";
 import NewsButton from "./NewsButton";
+import TutorialButton from "./TutorialButton";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -1251,6 +1252,7 @@ export default function Home() {
           )}
           {authMsg && <div className="mt-2 text-amber-200">{authMsg}</div>}
         </div>
+            <TutorialButton />
       </main>
     );
   }
