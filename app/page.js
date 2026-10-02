@@ -1,979 +1,2758 @@
-// ============================================================
-// ゲームエンジン（ルール処理のみ。画面やFirebaseには依存しない）
-// すべての関数は「今の状態」を受け取り「次の状態」を返す。
-// 不正な操作のときは null を返す（元の状態は変更しない）。
-// オンライン対戦・CPU対戦・CPUの先読みで共通に使う。
-// ============================================================
-import { SLOTS, BASE_FACTIONS, FACTION_LABEL, getCard, tokenInfo } from "./cards";
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { db, auth } from "../lib/firebase";
+import {
+  doc, getDocFromServer, getDocsFromServer, updateDoc, onSnapshot, runTransaction, addDoc, collection, setDoc,
+} from "firebase/firestore";
+import {
+  onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
+} from "firebase/auth";
+import { SLOTS, FACTION_LABEL, cardsBySlot, getCard, isCardAvailable } from "../lib/cards";
+import * as E from "../lib/engine";
+import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
+import { DECKS, pickDeck } from "../lib/decks";
+import NewsButton from "./NewsButton";
+import TutorialButton from "./TutorialButton";
 
 /* ============ 定数 ============ */
-export const MAX_FIELD = 5;
-export const MAX_HAND = 10;
-export const INITIAL_HP = 10;
-export const INITIAL_COST = 1;
-export const MAX_COST = 10;
-export const HASTE_EXTRA = 4;
-export const WOLF_COST = 4; // トランプの人狼が影響するコストの上限
-const WOLF_KEEP_KW = ["dies_end_of_turn", "no_attack_player"]; // 人狼化しても消えない（デメリット系）
-const LOG_LIMIT = 30;
+const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
+const CPU_ID = "cpu";
+const YOU_ID = "you";
+const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
+const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
+const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
+const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
+const APP_VERSION = (process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7); // 今動いているバージョン
+const REPORT_HISTORY = 10; // 不具合報告に含める「直前の状態」の数
+const MAX_MY_DECKS = 20; // 保存できるデッキの数
+// スマホのブラウザで、背景ぼかし（backdrop-filter）の上の数字が描き直されないことがあるため、
+// HP・コストを表示する帯ではぼかしを切る
+const NO_BLUR = { backdropFilter: "none", WebkitBackdropFilter: "none" };
+const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
+
+const MODE_MSG = {
+  damage3: "4ダメージを与える相手キャラを選んでください",
+  destroy: "破壊する相手キャラを選んでください",
+  destroyDraw: "破壊する相手キャラを選んでください",
+  crest: "4ダメージを与える相手キャラを選んでください",
+  bounce: "手札に戻す相手キャラ（コスト5以下）を選んでください",
+  goblin: "スタッツ-1する相手キャラを選んでください",
+  reduce1: "コストを-1する手札を選んでください",
+  reattack: "再攻撃させる攻撃済みの自軍キャラを選んでください",
+  faction: "陣営を選んでください（次の相手ターン、手札にあればその陣営しか使えない）",
+};
+
+// 再生パネルに出さない細かいログ
+const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン終了)$/;
 
 /* ============ ユーティリティ ============ */
-export const uid = () => Math.random().toString(36).slice(2, 10);
-export const cloneState = (s) => JSON.parse(JSON.stringify(s));
+const roomId = () =>
+  Array.from({ length: 4 }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join("");
+const fxClass = (f) =>
+  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "trump" ? `fx-${f}` : "fx-none";
+const tierColor = (t) =>
+  t === 1 ? "bg-amber-500 text-slate-900" : t === 2 ? "bg-sky-600 text-white" : "bg-slate-600 text-white";
+const isComplete = (sel) => !!sel && SLOTS.every((s) => sel[s] && isCardAvailable(sel[s]));
+// デッキの中で、期間が終わって使えなくなったカード
+const expiredCards = (sel) =>
+  SLOTS.filter((s) => sel && sel[s] && !isCardAvailable(sel[s])).map((s) => getCard(sel[s]) || { name: sel[s] });
 
-export function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+// ブラウザに保存したデータを読む
+function loadSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
-  return a;
 }
 
-export function buildDeck(selection) {
-  const deck = [];
-  SLOTS.forEach((slot) => {
-    const cardId = selection[slot];
-    for (let i = 0; i < 4; i++) deck.push({ uid: uid(), cardId, costMod: 0 });
-  });
-  return shuffle(deck);
+/* ============ 連勝記録（CPU戦とルームマッチで別々に保存） ============ */
+// ログイン中はアカウントごとに端末へ保存し、Firebase（players コレクション）にも保存する
+// ログインしていないときは、この端末だけに保存する
+const STREAK_KEY = "sme-streak-v1";
+let currentUid = null; // ログイン中のアカウント（Firebaseの内部ID）
+
+const streakKeyFor = (uid) => (uid ? `${STREAK_KEY}:${uid}` : STREAK_KEY);
+
+function loadStreaks(uid = currentUid) {
+  try {
+    const raw = localStorage.getItem(streakKeyFor(uid));
+    const v = raw ? JSON.parse(raw) : {};
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
 }
 
-export function newPlayer(deck, selection) {
+function saveStreaksLocal(all, uid = currentUid) {
+  try {
+    localStorage.setItem(streakKeyFor(uid), JSON.stringify(all || {}));
+  } catch {
+    // 保存できなくてもゲームは続ける
+  }
+}
+
+async function pushStreaks(uid, all) {
+  if (!uid) return;
+  try {
+    await setDoc(
+      doc(db, "players", uid),
+      { streaks: all || {}, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+  } catch {
+    // 保存できなくてもゲームは続ける（端末には残っている）
+  }
+}
+
+// 端末の記録とFirebaseの記録を、モードごとに新しい方でまとめる
+function mergeStreaks(local, remote) {
+  const out = { ...(local || {}) };
+  for (const m of ["cpu", "room"]) {
+    const a = (local || {})[m];
+    const b = (remote || {})[m];
+    if (b && (!a || (b.at || "") > (a.at || ""))) out[m] = b;
+  }
+  return out;
+}
+
+// 1試合の結果を記録する（同じ試合を2回数えないよう、試合ごとのキーで判定）
+// mode: "cpu" / "room"、key: 試合を見分ける文字列、win: 勝ったかどうか
+function recordStreak(mode, key, win) {
+  const all = loadStreaks();
+  const cur = all[mode] || { cur: 0, best: 0, keys: [] };
+  const keys = Array.isArray(cur.keys) ? cur.keys : [];
+  if (!key || keys.includes(key)) {
+    return { cur: cur.cur || 0, best: cur.best || 0, isNewBest: !!cur.lastNewBest && cur.lastKey === key };
+  }
+  const nextCur = win ? (cur.cur || 0) + 1 : 0;
+  const prevBest = cur.best || 0;
+  const nextBest = Math.max(prevBest, nextCur);
+  const isNewBest = win && nextCur > prevBest && nextCur >= 2;
+  all[mode] = {
+    cur: nextCur,
+    best: nextBest,
+    keys: [...keys, key].slice(-30),
+    lastKey: key,
+    lastNewBest: isNewBest,
+    at: new Date().toISOString(),
+  };
+  saveStreaksLocal(all);
+  pushStreaks(currentUid, all);
+  return { cur: nextCur, best: nextBest, isNewBest };
+}
+
+/* ============ プレイヤーアカウント ============ */
+// プレイヤーID：英小文字1文字＋1〜99（a1〜z99）
+const PLAYER_ID_RE = /^[a-z]([1-9]|[1-9][0-9])$/;
+const PIN_RE = /^[0-9]{3}$/;
+// Firebaseの仕組み上、IDとパスワードを内部用の形に変換して使う（実在のメールではない）
+// a1, a2, … a99, b1, … z99 の順に並べたID一覧
+const ALL_PLAYER_IDS = Array.from({ length: 26 * 99 }, (_, i) =>
+  `${String.fromCharCode(97 + Math.floor(i / 99))}${(i % 99) + 1}`
+);
+
+// 使用済みのプレイヤーIDを取得（playerIds コレクション）
+async function fetchUsedIds() {
+  const snap = await getDocsFromServer(collection(db, "playerIds"));
+  return new Set(snap.docs.map((d) => d.id));
+}
+
+const firstFreeId = (used) => ALL_PLAYER_IDS.find((id) => !used.has(id)) || null;
+
+// 自分のIDを使用済みとして登録（まだ無ければ）
+async function claimPlayerId(id, uid) {
+  try {
+    const ref = doc(db, "playerIds", id);
+    const snap = await getDocFromServer(ref);
+    if (!snap.exists()) await setDoc(ref, { uid, createdAt: new Date().toISOString() });
+  } catch {
+    // 失敗しても、ログイン側でIDの重複は防がれている
+  }
+}
+
+const idToEmail = (id) => `${id}@players.sme-tcg.app`;
+const pinToPassword = (pin) => `sme-${pin}-tcg`;
+
+function authErrorText(e) {
+  const c = e?.code || "";
+  if (c === "auth/email-already-in-use") return "そのプレイヤーIDはすでに使われています";
+  if (
+    c === "auth/invalid-credential" || c === "auth/wrong-password" ||
+    c === "auth/user-not-found" || c === "auth/invalid-login-credentials"
+  ) return "プレイヤーIDかパスワードが違います";
+  if (c === "auth/too-many-requests") return "失敗が続いたため、しばらく待ってからお試しください";
+  if (c === "auth/operation-not-allowed") return "ログイン機能がまだ有効になっていません（管理者の設定が必要）";
+  if (c === "auth/network-request-failed") return "通信に失敗しました。電波の良い所でお試しください";
+  return `エラーが発生しました: ${c || e?.message || "不明"}`;
+}
+
+// 試合を見分けるキー
+function gameKey(state, room) {
+  if (!state) return null;
+  if (room) return `${room}:${state.host || ""}:${state.guest || ""}:${state.gameNo || 0}`;
+  if (state.gameId) return state.gameId;
+  return `legacy:${state.turnCount || 0}:${String((state.log || [])[0] || "")}`;
+}
+
+// CPUの戦い方を、lib/cpu.js に存在するものから選ぶ
+function resolveStyle(wants) {
+  const list = Array.isArray(wants) ? wants : [wants];
+  const styles = CPU_DECKS.map((d) => d.style).filter(Boolean);
+  if (!styles.length) return list[0];
+  for (const w of list) {
+    const hit = styles.find((s) => s === w) || styles.find((s) => String(s).includes(w));
+    if (hit) return hit;
+  }
+  return styles[0];
+}
+
+/* ---- ルームのデータ ---- */
+// 新しく作る部屋（デッキ選択待ち）
+function newLobby(host) {
   return {
-    hp: INITIAL_HP,
-    maxCost: INITIAL_COST,
-    cost: INITIAL_COST,
-    deck,
-    hand: [],
-    field: [],
-    grave: [],
-    sacrifice: [],
-    sacrificedThisTurn: false,
-    pendingCost: 0,
-    selection,
+    host,
+    guest: null,
+    phase: "lobby",
+    ready: {},
+    sels: {},
+    lobbyIn: { [host]: true },
+    gameNo: 0,
+    closed: false,
+    turn: host,
+    turnPhase: "main",
+    turnCount: 1,
+    skipNext: null,
+    winner: null,
+    logSeq: 0,
+    log: ["ルームを作成しました"],
+    players: {},
   };
 }
 
-// 初期手札5枚を配る（player を直接書き換える）
-export function dealInitialHand(player) {
-  player.hand = player.deck.slice(0, 5);
-  player.deck = player.deck.slice(5);
+// 対戦後、同じ部屋でデッキ選択待ちに戻す
+function lobbyDoc(d, me) {
+  return {
+    host: d.host || null,
+    guest: d.guest || null,
+    phase: "lobby",
+    ready: {},
+    sels: d.sels || {},
+    lobbyIn: { [me]: true },
+    gameNo: d.gameNo || 0,
+    closed: false,
+    turn: d.host || null,
+    turnPhase: "main",
+    turnCount: 1,
+    skipNext: null,
+    winner: null,
+    logSeq: 0,
+    log: ["再戦の準備中"],
+    players: {},
+  };
 }
 
-// ローカル対戦（CPU戦）用のゲーム状態を作る
-export function createLocalGame({ p1, p2, sel1, sel2, first, log = [] }) {
+// 2人の準備が整ったら対戦開始の状態を作る
+function gameDoc(base, sels) {
+  const h = base.host;
+  const g = base.guest;
   const players = {
-    [p1]: newPlayer(buildDeck(sel1), sel1),
-    [p2]: newPlayer(buildDeck(sel2), sel2),
+    [h]: E.newPlayer(E.buildDeck(sels[h]), sels[h]),
+    [g]: E.newPlayer(E.buildDeck(sels[g]), sels[g]),
   };
-  dealInitialHand(players[p1]);
-  dealInitialHand(players[p2]);
+  E.dealInitialHand(players[h]);
+  E.dealInitialHand(players[g]);
   return {
-    host: p1,
-    guest: p2,
+    host: h,
+    guest: g,
     phase: "play",
-    turn: first,
+    ready: {},
+    sels,
+    lobbyIn: {},
+    gameNo: (base.gameNo || 0) + 1,
+    closed: false,
+    turn: Math.random() < 0.5 ? h : g, // 先攻をランダムに決定
     turnPhase: "main", // 先攻1ターン目はドローなし
     turnCount: 1,
     skipNext: null,
     winner: null,
-    log: [...log, "対戦開始！ 先攻は初ターンドローなし"],
+    logSeq: 0,
+    log: ["対戦開始！ 先攻はランダムで決定（先攻は初ターンドローなし）"],
     players,
   };
 }
 
-/* ============ 判定ヘルパー ============ */
-export const hasKw = (u, k) => !!(u && u.keywords && u.keywords.includes(k));
-export const isInvincible = (u) => hasKw(u, "invincible");
-// 効果判定用ID（コピー・トークンは元カードの能力を持つ）
-export const effectId = (u) => u.cardId || u.copyOf || null;
-// 手札・場・生贄置き場のカード情報（トークンも通常カードと同じ形で扱う）
-export const handInfo = (h) => (h ? (h.cardId ? getCard(h.cardId) : tokenInfo(h)) : null);
-export const unitInfo = (u) => (u ? (u.cardId ? getCard(u.cardId) : tokenInfo(u)) : null);
-export const otherId = (s, pid) => (s.host === pid ? s.guest : s.host);
-export const phaseOf = (s) => s.turnPhase || "main";
-
-// そのプレイヤーが今、指定フェーズの操作をできるか
-export function isActive(s, pid, phase) {
-  return !!s && s.phase === "play" && !s.winner && s.turn === pid && phaseOf(s) === phase;
+// 前回のログと今回のログを比べて、新しく増えた分だけを返す（古いルーム用）
+function newEntries(prev, cur) {
+  const ps = prev.map((x) => JSON.stringify(x));
+  const cs = cur.map((x) => JSON.stringify(x));
+  for (let k = Math.min(ps.length, cs.length); k > 0; k--) {
+    let ok = true;
+    for (let i = 0; i < k; i++) {
+      if (ps[ps.length - k + i] !== cs[i]) { ok = false; break; }
+    }
+    if (ok) return cur.slice(k);
+  }
+  return [];
 }
 
-// 手札のカードの実際のコスト（コスト増減込み）
-export function playCost(inst) {
-  const c = handInfo(inst);
-  if (!c) return 0;
-  return Math.max(0, c.cost + (inst.costMod || 0));
+// ログに通し番号を付ける（新しい行動を確実に見分けるため）
+function stampLog(next, prev) {
+  if (!next || !Array.isArray(next.log)) return next;
+  let seq = next.logSeq || (prev && prev.logSeq) || 0;
+  const log = next.log.map((l) => {
+    if (!l || typeof l !== "object" || l.n) return l;
+    seq += 1;
+    return { ...l, n: seq };
+  });
+  return { ...next, log, logSeq: seq };
 }
 
-/* ============ トランプ人狼コラボ用の判定 ============ */
-// どちらかの場にトランプの人狼がいるか
-export function wolfOnField(s) {
-  return Object.values((s && s.players) || {}).some((p) =>
-    (p.field || []).some((x) => effectId(x) === "trump_werewolf")
+// ログの中で一番大きい通し番号
+function maxSeq(log) {
+  return (log || []).reduce((m, l) => (l && typeof l === "object" && l.n > m ? l.n : m), 0);
+}
+
+// 定期取得した状態が、今の状態より新しいときだけ採用する
+function pickNewer(prev, next) {
+  if (!prev) return next;
+  const ga = prev.gameNo || 0;
+  const gb = next.gameNo || 0;
+  if (gb !== ga) return gb > ga ? next : prev;
+  const rank = { play: 0, waiting: 0, end: 1, lobby: 2 };
+  const ra = rank[prev.phase] || 0;
+  const rb = rank[next.phase] || 0;
+  if (rb !== ra) return rb > ra ? next : prev;
+  if (next.phase === "lobby") return next;
+  const a = prev.logSeq || 0;
+  const b = next.logSeq || 0;
+  if (b < a) return prev;
+  if (b === a && prev.phase === next.phase && prev.guest === next.guest && prev.winner === next.winner) {
+    return prev;
+  }
+  return next;
+}
+
+// 再生パネルの表示時間（攻撃は長め）
+function replayMs(item) {
+  const atk = item.lines.some((t) => /を攻撃|プレイヤーに\d+ダメージ/.test(t));
+  const base = atk ? 3600 : 2600;
+  return Math.min(atk ? 5500 : 4200, base + item.changes.length * 300);
+}
+
+// 相手の直前ターンの行動（行った順）
+function lastOppActions(log, myId) {
+  const arr = log || [];
+  const out = [];
+  let i = arr.length - 1;
+  while (i >= 0 && !(arr[i] && typeof arr[i] === "object" && arr[i].by !== myId)) i--;
+  for (; i >= 0; i--) {
+    const l = arr[i];
+    if (!l || typeof l !== "object" || l.by === myId) break;
+    if (!TRIVIAL_LOG.test(l.t)) out.unshift(l.t);
+  }
+  return out;
+}
+
+// 盤面の変化（HP・スタッツ・登場・退場・攻撃）を調べる
+function diffBoards(prevP, curP, myId, oppId, lines) {
+  const out = [];
+  for (const [pid, side] of [[oppId, "opp"], [myId, "me"]]) {
+    const a = prevP?.[pid], b = curP?.[pid];
+    if (!a || !b) continue;
+    if (a.hp !== b.hp) out.push({ side, kind: "hp", before: a.hp, after: b.hp });
+    const af = a.field || [], bf = b.field || [];
+    af.forEach((u) => {
+      const n = bf.find((x) => x.uid === u.uid);
+      if (!n) {
+        out.push({
+          side, kind: "gone", uid: u.uid, name: u.name, before: u.stat,
+          destroyed: lines.some((t) => t.includes(`${u.name} が破壊`)),
+        });
+      } else {
+        const acted = !u.attacked && n.attacked;
+        if (n.stat !== u.stat || acted) {
+          out.push({ side, kind: "unit", uid: u.uid, name: u.name, before: u.stat, after: n.stat, acted });
+        }
+      }
+    });
+    bf.forEach((n) => {
+      if (!af.some((x) => x.uid === n.uid)) {
+        out.push({ side, kind: "new", uid: n.uid, name: n.name, after: n.stat });
+      }
+    });
+  }
+  return out;
+}
+
+/* ============ メイン ============ */
+export default function Home() {
+  const [loaded, setLoaded] = useState(false);
+  const [screen, setScreen] = useState("menu");
+  const [matchMode, setMatchMode] = useState(null); // "cpu" / "room"
+  const [selection, setSelection] = useState({});
+  const [myId, setMyId] = useState("");
+  const [room, setRoom] = useState("");
+  const [joinInput, setJoinInput] = useState("");
+  const [state, setState] = useState(null);
+  const [resultState, setResultState] = useState(null); // 決着画面を見ている間の結果
+  const [detail, setDetail] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [lobbyBusy, setLobbyBusy] = useState(false);
+  // アカウント
+  const [user, setUser] = useState(null); // { uid, id, nickname }
+  const [streaks, setStreaks] = useState({});
+  const [authMode, setAuthMode] = useState(null); // null / "login" / "signup"
+  const [authId, setAuthId] = useState("");
+  const [authPin, setAuthPin] = useState("");
+  const [authNick, setAuthNick] = useState("");
+  const [authMsg, setAuthMsg] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [nickEdit, setNickEdit] = useState(false); // ニックネーム変更中
+  const [nickInput, setNickInput] = useState("");
+  // 保存デッキ（ログイン時のみ・アカウントに保存）
+  const [myDecks, setMyDecks] = useState([]);
+  const [deckSaveOpen, setDeckSaveOpen] = useState(false);
+  const [deckName, setDeckName] = useState("");
+  const [deckMsg, setDeckMsg] = useState("");
+  const [deckBusy, setDeckBusy] = useState(false);
+  const unsubRef = useRef(null);
+  const stateRef = useRef(null);
+
+  // CPU戦
+  const [cpuState, setCpuState] = useState(null);
+  const [cpuDeck, setCpuDeck] = useState(null);
+
+  // 起動時：保存データを復元
+  useEffect(() => {
+    const sv = loadSave() || {};
+    setMyId(sv.myId || E.uid());
+    if (sv.selection) setSelection(sv.selection);
+    let sc = sv.screen || "menu";
+    let mm = sv.matchMode || null;
+    if (sc === "cpu") {
+      if (sv.cpuState && sv.cpuDeck) {
+        setCpuState(sv.cpuState);
+        setCpuDeck(sv.cpuDeck);
+        mm = "cpu";
+      } else {
+        sc = "deck";
+        mm = "cpu";
+      }
+    }
+    if (sc === "game") {
+      if (sv.room) {
+        setRoom(sv.room);
+        subscribe(sv.room);
+        mm = "room";
+      } else {
+        sc = "menu";
+      }
+    }
+    if (sc === "deck") {
+      if (mm === "room") {
+        if (sv.room) {
+          setRoom(sv.room);
+          subscribe(sv.room);
+        } else {
+          sc = "menu";
+        }
+      } else if (mm !== "cpu") {
+        sc = "menu";
+      }
+    }
+    if (!SCREENS.includes(sc)) sc = "menu";
+    setMatchMode(sc === "menu" ? null : mm);
+    setScreen(sc);
+    setLoaded(true);
+    return () => unsubRef.current && unsubRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 状態が変わるたびに保存
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(
+        SAVE_KEY,
+        JSON.stringify({
+          myId,
+          screen,
+          matchMode,
+          selection,
+          room,
+          cpuState: screen === "cpu" ? cpuState : null,
+          cpuDeck: screen === "cpu" ? cpuDeck : null,
+        })
+      );
+    } catch {
+      // 保存できなくてもゲームは続ける
+    }
+  }, [loaded, myId, screen, matchMode, selection, room, cpuState, cpuDeck]);
+
+  // ログイン状態の監視
+  useEffect(() => {
+    const off = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        currentUid = null;
+        setUser(null);
+        setMyDecks([]);
+        setStreaks(loadStreaks(null));
+        return;
+      }
+      currentUid = u.uid;
+      const id = (u.email || "").split("@")[0];
+      claimPlayerId(id, u.uid); // 以前からのアカウントも使用済みIDとして登録
+      setUser((prev) => ({ uid: u.uid, id, nickname: prev && prev.uid === u.uid ? prev.nickname : "" }));
+      setStreaks(loadStreaks(u.uid));
+      try {
+        const snap = await getDocFromServer(doc(db, "players", u.uid));
+        const data = snap.exists() ? snap.data() : {};
+        const merged = mergeStreaks(loadStreaks(u.uid), data.streaks || {});
+        saveStreaksLocal(merged, u.uid);
+        setStreaks(merged);
+        setMyDecks(Array.isArray(data.decks) ? data.decks : []);
+        setUser((prev) => ({
+          uid: u.uid,
+          id,
+          nickname: data.nickname || (prev && prev.uid === u.uid ? prev.nickname : ""),
+        }));
+        if (JSON.stringify(merged) !== JSON.stringify(data.streaks || {})) {
+          await pushStreaks(u.uid, merged);
+        }
+      } catch {
+        // 通信できなくても端末の記録で続ける
+      }
+    });
+    return () => off();
+  }, []);
+
+  // タイトルに戻ったら最新の記録を表示
+  useEffect(() => {
+    if (screen === "menu") setStreaks(loadStreaks());
+  }, [screen]);
+
+  function openAuth(mode) {
+    setAuthMode(mode);
+    setAuthId("");
+    setAuthPin("");
+    setAuthNick("");
+    setAuthMsg("");
+    if (mode === "signup") {
+      // 空いているいちばん小さいIDを表示
+      setAuthId("…");
+      fetchUsedIds()
+        .then((used) => setAuthId(firstFreeId(used) || ""))
+        .catch((e) => {
+          setAuthId("");
+          setAuthMsg(`IDの確認に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+        });
+    }
+  }
+
+  /* ---- 新規登録 ---- */
+  async function signup() {
+    const nick = authNick.trim();
+    if (!PIN_RE.test(authPin)) return setAuthMsg("パスワードは数字3桁で入力してください");
+    if (!nick) return setAuthMsg("ニックネームを入力してください");
+    if (nick.length > 12) return setAuthMsg("ニックネームは12文字以内にしてください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      // ログイン前にこの端末で遊んだ記録を引き継ぐ
+      const guest = loadStreaks(null);
+      // 空いているいちばん小さいIDで登録（同時に誰かが取っていたら次のIDへ）
+      const used = await fetchUsedIds();
+      let id = null;
+      let cred = null;
+      for (let tries = 0; tries < 30; tries++) {
+        const cand = firstFreeId(used);
+        if (!cand) throw new Error("空いているプレイヤーIDがありません");
+        try {
+          cred = await createUserWithEmailAndPassword(auth, idToEmail(cand), pinToPassword(authPin));
+          id = cand;
+          break;
+        } catch (e) {
+          if (e?.code !== "auth/email-already-in-use") throw e;
+          used.add(cand);
+        }
+      }
+      if (!cred) throw new Error("プレイヤーIDの割り当てに失敗しました。もう一度お試しください");
+      const uid = cred.user.uid;
+      await claimPlayerId(id, uid);
+      currentUid = uid;
+      saveStreaksLocal(guest, uid);
+      await setDoc(doc(db, "players", uid), {
+        id,
+        nickname: nick,
+        streaks: guest,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      setUser({ uid, id, nickname: nick });
+      setStreaks(guest);
+      setAuthMode(null);
+      setAuthMsg(`登録しました！ あなたのプレイヤーIDは「${id}」です。パスワードと一緒に必ずメモしてください。`);
+    } catch (e) {
+      setAuthMsg(authErrorText(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  /* ---- ログイン ---- */
+  async function login() {
+    const id = authId.trim().toLowerCase();
+    if (!PLAYER_ID_RE.test(id)) return setAuthMsg("プレイヤーIDは a1〜z99 の形で入力してください");
+    if (!PIN_RE.test(authPin)) return setAuthMsg("パスワードは数字3桁で入力してください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      await signInWithEmailAndPassword(auth, idToEmail(id), pinToPassword(authPin));
+      setAuthMode(null);
+    } catch (e) {
+      setAuthMsg(authErrorText(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  /* ---- ニックネーム変更 ---- */
+  async function saveNickname() {
+    if (!user) return;
+    const nick = nickInput.trim();
+    if (!nick) return setAuthMsg("ニックネームを入力してください");
+    if (nick.length > 12) return setAuthMsg("ニックネームは12文字以内にしてください");
+    setAuthBusy(true);
+    setAuthMsg("");
+    try {
+      await setDoc(
+        doc(db, "players", user.uid),
+        { id: user.id, nickname: nick, updatedAt: new Date().toISOString() },
+        { merge: true }
+      );
+      setUser((prev) => (prev ? { ...prev, nickname: nick } : prev));
+      setNickEdit(false);
+      setAuthMsg("ニックネームを変更しました");
+    } catch (e) {
+      setAuthMsg(`保存に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  /* ---- デッキ保存 ---- */
+  function openDeckSave() {
+    setDeckMsg("");
+    if (!user) {
+      setDeckMsg("デッキの保存はログイン中のみ使えます（タイトル画面からログインしてください）");
+      return;
+    }
+    if (!SLOTS.every((s) => selection[s])) {
+      setDeckMsg("すべての枠を選んでから保存してください");
+      return;
+    }
+    setDeckName("");
+    setDeckSaveOpen(true);
+  }
+
+  async function writeDecks(next) {
+    await setDoc(
+      doc(db, "players", user.uid),
+      { decks: next, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+    setMyDecks(next);
+  }
+
+  async function saveDeck() {
+    if (!user) return;
+    const name = deckName.trim();
+    if (!name) return setDeckMsg("デッキ名を入力してください");
+    if (name.length > 16) return setDeckMsg("デッキ名は16文字以内にしてください");
+    const same = myDecks.find((d) => d.name === name);
+    if (!same && myDecks.length >= MAX_MY_DECKS) {
+      return setDeckMsg(`保存できるのは${MAX_MY_DECKS}個までです（不要なデッキを削除してください）`);
+    }
+    const sel = {};
+    SLOTS.forEach((s) => { sel[s] = selection[s]; });
+    const entry = { id: same ? same.id : `d${Date.now()}`, name, selection: sel, savedAt: new Date().toISOString() };
+    const next = same ? myDecks.map((d) => (d.id === same.id ? entry : d)) : [...myDecks, entry];
+    setDeckBusy(true);
+    setDeckMsg("");
+    try {
+      await writeDecks(next);
+      setDeckSaveOpen(false);
+      setDeckMsg(same ? `「${name}」を上書き保存しました` : `「${name}」を保存しました`);
+    } catch (e) {
+      setDeckMsg(`保存に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setDeckBusy(false);
+    }
+  }
+
+  async function deleteDeck(d) {
+    if (!user || !d) return;
+    if (typeof window !== "undefined" && !window.confirm(`「${d.name}」を削除しますか？`)) return;
+    setDeckBusy(true);
+    setDeckMsg("");
+    try {
+      await writeDecks(myDecks.filter((x) => x.id !== d.id));
+      setDeckMsg(`「${d.name}」を削除しました`);
+    } catch (e) {
+      setDeckMsg(`削除に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setDeckBusy(false);
+    }
+  }
+
+  async function logout() {
+    setNickEdit(false);
+    setAuthMsg("");
+    try {
+      await signOut(auth);
+    } catch {
+      // 失敗しても画面はそのまま
+    }
+  }
+
+  // 最新のオンライン状態を覚えておく（定期取得で使う）
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // オンライン対戦：iPhoneなどで同期が止まったときの保険
+  // ・画面に戻ってきたら、つなぎ直して最新を取得
+  // ・相手のターン中やデッキ選択中は数秒ごとに最新を取得
+  useEffect(() => {
+    if (!room || matchMode !== "room") return;
+    if (screen !== "game" && screen !== "deck") return;
+    const wake = () => {
+      if (document.visibilityState !== "visible") return;
+      subscribe(room);
+      refreshOnline();
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    const iv = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      const s = stateRef.current;
+      if (s && s.phase === "play" && s.turn === myId) return; // 自分のターン中は不要
+      refreshOnline();
+    }, POLL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, room, myId, matchMode]);
+
+  // 決着したら結果を控えておく（相手が先に再戦準備に入っても結果画面を見続けられるように）
+  useEffect(() => {
+    if (screen === "game" && state && state.phase === "end") setResultState(state);
+  }, [screen, state]);
+
+  // ルームマッチ：2人とも準備完了で対戦画面へ／部屋がデッキ選択待ちならデッキ選択へ
+  useEffect(() => {
+    if (matchMode !== "room" || !state) return;
+    if (screen === "deck" && state.phase === "play" && state.players && state.players[myId]) {
+      setResultState(null);
+      setDetail(null);
+      setScreen("game");
+      return;
+    }
+    if (screen === "game" && state.phase === "lobby" && !resultState) {
+      setScreen("deck");
+    }
+  }, [screen, state, matchMode, myId, resultState]);
+
+  const deckComplete = isComplete(selection);
+  const expired = expiredCards(selection);
+  const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
+  const matchedMyDeck = myDecks.find((d) => d.selection && SLOTS.every((s) => d.selection[s] === selection[s]));
+
+  /* ---- ルームの様子（デッキ選択画面用） ---- */
+  const lobby = matchMode === "room" ? state : null;
+  const oppIdL = lobby ? (lobby.host === myId ? lobby.guest : lobby.host) : null;
+  const lobbyReady = lobby && lobby.phase === "lobby" && lobby.ready ? lobby.ready : {};
+  const myReady = !!lobbyReady[myId];
+  const oppReady = !!(oppIdL && lobbyReady[oppIdL]);
+  const oppInLobby = !!(oppIdL && lobby && lobby.phase === "lobby" && lobby.lobbyIn && lobby.lobbyIn[oppIdL]);
+  const locked = matchMode === "room" && myReady;
+
+  /* ---- 対戦から抜ける（to: 移動先の画面） ---- */
+  function leaveGame(to = "menu") {
+    if (unsubRef.current) {
+      unsubRef.current();
+      unsubRef.current = null;
+    }
+    setState(null);
+    setResultState(null);
+    setRoom("");
+    setCpuState(null);
+    setCpuDeck(null);
+    setDetail(null);
+    setMsg("");
+    setMatchMode(null);
+    setScreen(to);
+  }
+
+  /* ---- 部屋から自分を外す ---- */
+  async function leaveRoom(id) {
+    if (!id || !myId) return;
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return;
+        const d = snap.data();
+        const ready = { ...(d.ready || {}) };
+        delete ready[myId];
+        const lobbyIn = { ...(d.lobbyIn || {}) };
+        delete lobbyIn[myId];
+        if (d.guest === myId) {
+          tx.update(ref, { guest: null, ready, lobbyIn });
+        } else if (d.host === myId) {
+          if (d.guest) {
+            // 相手が残っていれば、相手を部屋主にする
+            tx.update(ref, { host: d.guest, guest: null, ready, lobbyIn });
+          } else {
+            tx.update(ref, { host: null, closed: true, ready, lobbyIn });
+          }
+        }
+      });
+    } catch {
+      // 通信に失敗しても画面は戻る
+    }
+  }
+
+  /* ---- 部屋を出てタイトルへ ---- */
+  async function leaveOnline() {
+    const id = room;
+    leaveGame("menu");
+    await leaveRoom(id);
+  }
+
+  /* ---- リタイア ---- */
+  async function retire() {
+    // リタイアは負けとして連勝記録をリセット
+    if (screen === "cpu" && cpuState && cpuState.phase === "play" && !cpuState.winner) {
+      recordStreak("cpu", gameKey(cpuState, null), false);
+    }
+    if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
+      recordStreak("room", gameKey(state, room), false);
+    }
+    // オンライン対戦中なら相手の勝ちにする
+    if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
+      const oppId = E.otherId(state, myId);
+      if (oppId) {
+        try {
+          const stamped = stampLog(
+            { ...state, log: [...(state.log || []), { by: myId, t: "リタイアしました" }].slice(-30) },
+            state
+          );
+          await updateDoc(doc(db, "rooms", room), {
+            winner: oppId,
+            phase: "end",
+            log: stamped.log,
+            logSeq: stamped.logSeq,
+          });
+        } catch {
+          // 通信に失敗してもタイトルへは戻る
+        }
+      }
+    }
+    if (screen === "game" && room) {
+      await leaveOnline();
+      return;
+    }
+    leaveGame("menu");
+  }
+
+  /* ---- 部屋に入った後の共通処理 ---- */
+  function enterRoom(id) {
+    setState(null);
+    setResultState(null);
+    setDetail(null);
+    setRoom(id);
+    setMatchMode("room");
+    subscribe(id);
+    setScreen("deck");
+  }
+
+  /* ---- 部屋を作る ---- */
+  async function createRoom() {
+    if (lobbyBusy || !myId) return;
+    setLobbyBusy(true);
+    setMsg("");
+    try {
+      let id = null;
+      for (let i = 0; i < 5 && !id; i++) {
+        const cand = roomId();
+        const ok = await runTransaction(db, async (tx) => {
+          const ref = doc(db, "rooms", cand);
+          const snap = await tx.get(ref);
+          if (snap.exists()) {
+            const d = snap.data();
+            if (!d.closed && d.host) return false; // 使用中のIDなら作り直す
+          }
+          tx.set(ref, newLobby(myId));
+          return true;
+        });
+        if (ok) id = cand;
+      }
+      if (!id) throw new Error("no id");
+      enterRoom(id);
+    } catch {
+      setMsg("部屋を作れませんでした。もう一度お試しください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 部屋に入る ---- */
+  async function joinRoom(raw) {
+    const id = String(raw || "").trim().toUpperCase();
+    if (id.length !== 4) {
+      setMsg("4文字のIDを入力してください");
+      return;
+    }
+    if (lobbyBusy || !myId) return;
+    setLobbyBusy(true);
+    setMsg("");
+    try {
+      const res = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return "none";
+        const d = snap.data();
+        if (d.closed || !d.host) return "none";
+        if (d.host === myId || d.guest === myId) return "ok"; // 入り直し
+        if (d.guest) return "full";
+        if (d.phase !== "lobby" && d.phase !== "end") return "none"; // 古い形式の部屋
+        tx.update(ref, {
+          guest: myId,
+          ready: { ...(d.ready || {}), [myId]: false },
+          lobbyIn: { ...(d.lobbyIn || {}), [myId]: true },
+        });
+        return "ok";
+      });
+      if (res === "none") {
+        setMsg("ルームが見つかりません");
+      } else if (res === "full") {
+        setMsg("すでに満室です");
+      } else {
+        setJoinInput("");
+        enterRoom(id);
+      }
+    } catch {
+      setMsg("通信に失敗しました。もう一度お試しください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 準備完了／取り消し ---- */
+  async function toggleReady(next) {
+    if (!room || !myId || lobbyBusy) return;
+    if (next && !deckComplete) return;
+    setLobbyBusy(true);
+    setMsg("");
+    const sel = { ...selection };
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", room);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("gone");
+        const d = snap.data();
+        if (d.host !== myId && d.guest !== myId) throw new Error("gone");
+        let base;
+        if (d.phase === "lobby") base = d;
+        else if (d.phase === "end") base = lobbyDoc(d, myId);
+        else return; // すでに対戦が始まっている
+        const ready = { ...(base.ready || {}), [myId]: next };
+        const sels = { ...(base.sels || {}), [myId]: sel };
+        const lobbyIn = { ...(base.lobbyIn || {}), [myId]: true };
+        const h = base.host;
+        const g = base.guest;
+        if (next && h && g && ready[h] && ready[g] && isComplete(sels[h]) && isComplete(sels[g])) {
+          tx.set(ref, gameDoc(base, sels));
+        } else {
+          tx.set(ref, { ...base, ready, sels, lobbyIn });
+        }
+      });
+    } catch {
+      setMsg("通信に失敗しました。もう一度押してください");
+    } finally {
+      setLobbyBusy(false);
+    }
+  }
+
+  /* ---- 再戦（ルームマッチ） ---- */
+  async function rematchOnline() {
+    const id = room;
+    setResultState(null);
+    setDetail(null);
+    setMsg("");
+    setScreen("deck");
+    if (!id) return;
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return;
+        const d = snap.data();
+        if (d.phase === "end") {
+          tx.set(ref, lobbyDoc(d, myId));
+        } else if (d.phase === "lobby") {
+          tx.update(ref, { lobbyIn: { ...(d.lobbyIn || {}), [myId]: true } });
+        }
+      });
+    } catch {
+      // 失敗しても「準備完了」を押したときに部屋を戻す
+    }
+  }
+
+  /* ---- 再戦（CPU） ---- */
+  function rematchCpu() {
+    setCpuState(null);
+    setCpuDeck(null);
+    setDetail(null);
+    setMsg("");
+    setMatchMode("cpu");
+    setScreen("deck");
+  }
+
+  function subscribe(id) {
+    if (unsubRef.current) unsubRef.current();
+    unsubRef.current = onSnapshot(
+      doc(db, "rooms", id),
+      (s) => {
+        if (s.exists()) {
+          const d = s.data();
+          if (d.closed) {
+            leaveGame("menu");
+            return;
+          }
+          setState(d);
+        } else {
+          // ルームが無くなっていたらタイトルへ
+          leaveGame("menu");
+        }
+      },
+      () => {
+        // 通信エラー時はタイトルに戻さず、少し待ってつなぎ直す
+        setTimeout(() => {
+          if (unsubRef.current) subscribe(id);
+        }, 2000);
+      }
+    );
+  }
+
+  // サーバーから最新の状態を直接取りに行く
+  async function refreshOnline() {
+    if (!room) return;
+    try {
+      const s = await getDocFromServer(doc(db, "rooms", room));
+      if (s.exists()) setState((prev) => pickNewer(prev, s.data()));
+    } catch {
+      // 取れなければ次の機会に
+    }
+  }
+
+  async function pushOnline(next) {
+    await updateDoc(doc(db, "rooms", room), next);
+  }
+
+  /* ---- CPU戦開始 ---- */
+  function startCpu() {
+    if (!deckComplete) return;
+    const base = DECKS.length ? pickDeck() : pickCpuDeck();
+    const d = { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
+    setCpuDeck(d);
+    setCpuState({
+      ...E.createLocalGame({
+        p1: YOU_ID,
+        p2: CPU_ID,
+        sel1: selection,
+        sel2: d.selection,
+        first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
+        log: [`CPUのデッキ: ${d.name}（Tier${d.tier}）`],
+      }),
+      gameId: `cpu:${E.uid()}:${Date.now()}`, // 連勝記録用の試合ID
+    });
+    setDetail(null);
+    setMatchMode("cpu");
+    setScreen("cpu");
+  }
+
+  /* ============ 読み込み中 ============ */
+  if (!loaded) return <div className="p-8 text-center sme-label">LOADING...</div>;
+
+  /* ============ 画面: メニュー ============ */
+  if (screen === "menu") {
+    return (
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col items-center justify-center text-center">
+                 <NewsButton />
+        <div className="sme-emblems mb-8">
+          <div className="sme-emblem sun">☀</div>
+          <div className="sme-emblem moon">☾</div>
+          <div className="sme-emblem earth">◈</div>
+        </div>
+        <h1 className="sme-title text-3xl sm:text-4xl">SUN · MOON · EARTH</h1>
+        <div className="sme-title-line" />
+        <p className="sme-sub text-[11px] mt-4 mb-12">THREE FACTIONS CARD BATTLE</p>
+
+        <div className="w-full max-w-xs flex flex-col gap-3">
+          <button
+            onClick={() => { setMsg(""); setMatchMode("cpu"); setScreen("deck"); }}
+            className="sme-btn sme-btn-earth sme-glow text-lg"
+          >
+            CPU対戦
+          </button>
+          <button
+            onClick={() => { setMsg(""); setScreen("roomMenu"); }}
+            className="sme-btn sme-btn-sun sme-glow text-lg"
+          >
+            ルームマッチ
+          </button>
+        </div>
+
+        <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
+          10のコスト枠から各1種を選び、4枚ずつ計40枚のデッキを作ります。
+          友達とのルームマッチと、CPU対戦が遊べます。
+        </div>
+
+        <div className="sme-panel mt-4 p-4 text-[11px] text-slate-300 w-full max-w-xs text-left">
+          {user ? (
+            <div className="flex justify-between items-center mb-3">
+              <span>
+                <span className="text-amber-300 text-sm font-bold">{user.nickname || "（名前なし）"}</span>
+                <span className="text-slate-400 ml-2">ID: {user.id}</span>
+              </span>
+              <span className="flex gap-1">
+                <button
+                  onClick={() => { setNickEdit(true); setNickInput(user.nickname || ""); setAuthMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+                >
+                  名前変更
+                </button>
+                <button onClick={logout} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+                  ログアウト
+                </button>
+              </span>
+            </div>
+          ) : (
+            <div className="mb-3 text-slate-400">
+              ログインすると連勝記録がアカウントに保存され、別の端末でも引き継げます
+            </div>
+          )}
+          <div className="flex justify-between mb-1">
+            <span>CPU戦</span>
+            <span>
+              現在 {(streaks.cpu && streaks.cpu.cur) || 0}連勝 / 最高 {(streaks.cpu && streaks.cpu.best) || 0}連勝
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>ルームマッチ</span>
+            <span>
+              現在 {(streaks.room && streaks.room.cur) || 0}連勝 / 最高 {(streaks.room && streaks.room.best) || 0}連勝
+            </span>
+          </div>
+
+          {user && nickEdit && (
+            <div className="flex flex-col gap-2 mt-3">
+              <div className="text-slate-200 text-xs font-bold">ニックネーム変更</div>
+              <input
+                value={nickInput}
+                onChange={(e) => setNickInput(e.target.value)}
+                placeholder="新しいニックネーム（12文字以内）"
+                maxLength={12}
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              <div className="flex gap-2">
+                <button disabled={authBusy} onClick={saveNickname} className="sme-btn sme-btn-moon sme-btn-sm">
+                  {authBusy ? "保存中…" : "保存する"}
+                </button>
+                <button
+                  onClick={() => { setNickEdit(false); setAuthMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!user && !authMode && (
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => openAuth("login")} className="sme-btn sme-btn-moon sme-btn-sm">
+                ログイン
+              </button>
+              <button onClick={() => openAuth("signup")} className="sme-btn sme-btn-ghost sme-btn-sm">
+                新規登録
+              </button>
+            </div>
+          )}
+
+          {!user && authMode && (
+            <div className="flex flex-col gap-2 mt-3">
+              <div className="text-slate-200 text-xs font-bold">
+                {authMode === "signup" ? "新規登録" : "ログイン"}
+              </div>
+              {authMode === "signup" ? (
+                <div className="px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm">
+                  プレイヤーID：<span className="font-bold text-amber-300">{authId || "―"}</span>
+                  <span className="text-[10px] text-slate-400 ml-2">（自動で決まります）</span>
+                </div>
+              ) : (
+                <input
+                  value={authId}
+                  onChange={(e) => setAuthId(e.target.value)}
+                  placeholder="プレイヤーID（a1〜z99）"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+                />
+              )}
+              <input
+                value={authPin}
+                onChange={(e) => setAuthPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
+                placeholder="パスワード（数字3桁）"
+                type="password"
+                inputMode="numeric"
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              {authMode === "signup" && (
+                <>
+                  <input
+                    value={authNick}
+                    onChange={(e) => setAuthNick(e.target.value)}
+                    placeholder="ニックネーム（12文字以内）"
+                    maxLength={12}
+                    className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+                  />
+                  <div className="text-[10px] text-amber-200">
+                    ※ プレイヤーIDとパスワードは忘れないようにメモしてください（再発行できません）
+                  </div>
+                </>
+              )}
+              <div className="flex gap-2">
+                <button
+                  disabled={authBusy}
+                  onClick={authMode === "signup" ? signup : login}
+                  className="sme-btn sme-btn-moon sme-btn-sm"
+                >
+                  {authBusy ? "確認中…" : authMode === "signup" ? "登録する" : "ログイン"}
+                </button>
+                <button onClick={() => setAuthMode(null)} className="sme-btn sme-btn-ghost sme-btn-sm">
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
+          {authMsg && <div className="mt-2 text-amber-200">{authMsg}</div>}
+        </div>
+            <TutorialButton />
+      </main>
+    );
+  }
+
+  /* ============ 画面: ルームマッチ（作る／入る） ============ */
+  if (screen === "roomMenu") {
+    return (
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
+        <h2 className="sme-heading text-2xl mb-6 text-center">ルームマッチ</h2>
+        <div className="sme-panel p-5 flex flex-col gap-3">
+          <button disabled={lobbyBusy} onClick={createRoom} className="sme-btn sme-btn-sun sme-glow">
+            {lobbyBusy ? "作成中…" : "部屋を作る"}
+          </button>
+          <button
+            disabled={lobbyBusy}
+            onClick={() => { setMsg(""); setJoinInput(""); setScreen("join"); }}
+            className="sme-btn sme-btn-moon"
+          >
+            部屋に入る
+          </button>
+          {msg && <div className="text-red-400 text-sm">{msg}</div>}
+          <button
+            onClick={() => { setMsg(""); setMatchMode(null); setScreen("menu"); }}
+            className="sme-btn sme-btn-ghost"
+          >
+            戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* ============ 画面: ルーム参加 ============ */
+  if (screen === "join") {
+    return (
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
+        <h2 className="sme-heading text-2xl mb-6 text-center">部屋に入る</h2>
+        <div className="sme-panel p-5">
+          <div className="sme-label mb-2">ROOM ID</div>
+          <input
+            value={joinInput}
+            onChange={(e) => setJoinInput(e.target.value)}
+            placeholder="4文字"
+            className="w-full p-4 rounded-lg bg-slate-950/70 border border-amber-200/30 text-center text-3xl tracking-[0.3em] mb-3 font-bold text-amber-200 outline-none focus:border-amber-300 uppercase"
+            maxLength={4}
+            autoCapitalize="characters"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {msg && <div className="text-red-400 text-sm mb-3">{msg}</div>}
+          <button disabled={lobbyBusy} onClick={() => joinRoom(joinInput)} className="sme-btn sme-btn-moon">
+            {lobbyBusy ? "確認中…" : "入室する"}
+          </button>
+          <button onClick={() => { setMsg(""); setScreen("roomMenu"); }} className="sme-btn sme-btn-ghost mt-2">
+            戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* ============ 画面: デッキ選択 ============ */
+  if (screen === "deck") {
+    const isRoom = matchMode === "room";
+    let oppStatus = "未入室（IDを伝えてください）";
+    if (oppIdL) {
+      if (lobby && lobby.phase === "end") oppStatus = "結果画面を見ています";
+      else if (oppReady) oppStatus = "準備完了";
+      else if (oppInLobby) oppStatus = "デッキ選択中";
+      else oppStatus = "結果画面を見ています";
+    }
+    let hint = "";
+    if (isRoom && myReady) {
+      if (!oppIdL) hint = "相手の入室を待っています…";
+      else if (!oppReady) hint = "相手の準備完了を待っています…";
+      else hint = "対戦を開始します…";
+    }
+
+    return (
+      <main className={`min-h-screen p-4 max-w-lg mx-auto ${isRoom ? "pb-72" : "pb-48"}`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="sme-heading text-2xl">デッキ選択</h2>
+          {isRoom ? (
+            <button onClick={leaveOnline} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+              退室する
+            </button>
+          ) : (
+            <button
+              onClick={() => { setMsg(""); setMatchMode(null); setScreen("menu"); }}
+              className="sme-btn sme-btn-ghost sme-btn-sm !w-auto"
+            >
+              タイトルへ
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-400 mb-4">
+          {isRoom ? "ルームマッチ" : "CPU対戦"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）
+        </p>
+        {locked && (
+          <div className="sme-panel p-2 mb-4 text-[11px] text-amber-200 text-center">
+            準備完了中はデッキを変更できません（変更するときは「準備を取り消す」）
+          </div>
+        )}
+
+        {/* おすすめデッキ */}
+        <div className="mb-6">
+          <div className="sme-label mb-2">RECOMMENDED DECKS</div>
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            <button
+              onClick={openDeckSave}
+              disabled={locked}
+              title="今のデッキを保存"
+              className="sme-btn sme-btn-sm shrink-0 !w-auto text-[13px] font-bold sme-btn-moon px-3"
+            >
+              ＋
+            </button>
+            {myDecks.map((d) => {
+              const on = matchedMyDeck?.id === d.id;
+              return (
+                <button
+                  key={d.id}
+                  onClick={() => { if (!locked) setSelection({ ...d.selection }); }}
+                  className={`sme-btn sme-btn-sm shrink-0 !w-auto text-[11px] ${on ? "sme-btn-sun" : "sme-btn-ghost"}`}
+                >
+                  <span className="inline-block text-[9px] font-bold px-1 rounded mr-1 bg-emerald-600 text-white">
+                    MY
+                  </span>
+                  {d.name}
+                </button>
+              );
+            })}
+            {PRESETS.map((d) => {
+              const on = matchedPreset?.id === d.id;
+              return (
+                <button
+                  key={d.id}
+                  onClick={() => { if (!locked) setSelection({ ...d.selection }); }}
+                  className={`sme-btn sme-btn-sm shrink-0 !w-auto text-[11px] ${on ? "sme-btn-sun" : "sme-btn-ghost"}`}
+                >
+                  <span className={`inline-block text-[9px] font-bold px-1 rounded mr-1 ${tierColor(d.tier)}`}>
+                    T{d.tier}
+                  </span>
+                  {d.name}
+                </button>
+              );
+            })}
+          </div>
+          {deckSaveOpen && (
+            <div className="sme-panel mt-2 p-3 flex flex-col gap-2">
+              <div className="text-xs font-bold text-slate-200">今のデッキを保存</div>
+              <input
+                value={deckName}
+                onChange={(e) => setDeckName(e.target.value)}
+                placeholder="デッキ名（16文字以内）"
+                maxLength={16}
+                className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 text-sm"
+              />
+              <div className="text-[10px] text-slate-400">※ 同じ名前のデッキがあるときは上書きされます</div>
+              <div className="flex gap-2">
+                <button disabled={deckBusy} onClick={saveDeck} className="sme-btn sme-btn-moon sme-btn-sm">
+                  {deckBusy ? "保存中…" : "保存する"}
+                </button>
+                <button
+                  onClick={() => { setDeckSaveOpen(false); setDeckMsg(""); }}
+                  className="sme-btn sme-btn-ghost sme-btn-sm"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
+          {deckMsg && <div className="mt-2 text-[11px] text-amber-200">{deckMsg}</div>}
+          {matchedMyDeck && (
+            <div className="sme-panel mt-2 p-3 flex items-center gap-2">
+              <span className="text-[10px] font-bold px-1.5 rounded bg-emerald-600 text-white">MY</span>
+              <span className="text-sm font-bold">{matchedMyDeck.name}</span>
+              <button
+                disabled={deckBusy || locked}
+                onClick={() => deleteDeck(matchedMyDeck)}
+                className="sme-btn sme-btn-ghost sme-btn-sm !w-auto ml-auto text-[11px]"
+              >
+                削除
+              </button>
+            </div>
+          )}
+          {matchedPreset && (
+            <div className="sme-panel mt-2 p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`text-[10px] font-bold px-1.5 rounded ${tierColor(matchedPreset.tier)}`}>
+                  Tier{matchedPreset.tier}
+                </span>
+                <span className="text-sm font-bold">{matchedPreset.name}</span>
+                {matchedPreset.share && (
+                  <span className="text-[10px] text-slate-400 ml-auto">想定使用率 {matchedPreset.share}%</span>
+                )}
+              </div>
+              {matchedPreset.desc && (
+                <p className="text-[11px] text-slate-300 leading-relaxed">{matchedPreset.desc}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {SLOTS.map((slot) => (
+          <div key={slot} className="mb-5">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="cost-gem"><span>{slot.replace(/[ab]/, "")}</span></span>
+              <span className="sme-label">
+                COST {slot}
+                {(slot === "2b" || slot === "3b" || slot === "6") && " ・ MAGIC"}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {cardsBySlot(slot).map((c) => {
+                const on = selection[slot] === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => { if (!locked) setSelection({ ...selection, [slot]: c.id }); }}
+                    className={`pick-card ${fxClass(c.faction)} ${on ? "is-on" : ""}`}
+                  >
+                    <div className="text-[10px] mb-1 fx-text font-bold">
+                      {FACTION_LABEL[c.faction]}
+                    </div>
+                    <div className="text-[11px] font-bold leading-tight">{c.name}</div>
+                    {c.stat && <div className="text-[10px] text-slate-400 mt-1">STAT {c.stat}</div>}
+                    <div
+                      onClick={(e) => { e.stopPropagation(); setDetail(c); }}
+                      className="text-[10px] text-sky-300 mt-1 underline"
+                    >
+                      詳細
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        <div className="fixed bottom-0 left-0 right-0 z-20 p-4 sme-panel !rounded-none !border-x-0 !border-b-0">
+          <div className="max-w-lg mx-auto">
+            {isRoom && (
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="sme-label">ROOM ID</span>
+                  <span className="text-2xl font-bold text-amber-200 tracking-[0.25em]">{room}</span>
+                </div>
+                <span className="text-[10px] text-slate-400">このIDを相手に伝えてください</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between mb-2">
+              <span className="sme-label">DECK</span>
+              <span className={`text-xs font-bold ${deckComplete ? "text-emerald-300" : "text-slate-400"}`}>
+                {Object.keys(selection).length} / 10 枠選択済み
+              </span>
+            </div>
+            {expired.length > 0 && (
+              <div className="text-[11px] text-rose-300 mb-2">
+                期間終了カードが含まれています（{expired.map((c) => c.name).join("・")}）。別のカードに差し替えてください。
+              </div>
+            )}
+
+            {isRoom ? (
+              <>
+                <div className="grid grid-cols-2 gap-2 text-[11px] mb-2">
+                  <div className="sme-panel px-2 py-1.5">
+                    <span className="text-slate-400">あなた：</span>
+                    <span className={myReady ? "text-emerald-300 font-bold" : "text-slate-200"}>
+                      {myReady ? "準備完了" : "デッキ選択中"}
+                    </span>
+                  </div>
+                  <div className="sme-panel px-2 py-1.5">
+                    <span className="text-slate-400">相手：</span>
+                    <span className={oppReady ? "text-emerald-300 font-bold" : "text-slate-200"}>
+                      {oppStatus}
+                    </span>
+                  </div>
+                </div>
+                {msg && <div className="text-red-400 text-xs mb-2">{msg}</div>}
+                {hint && <div className="text-[11px] text-amber-200 mb-2 text-center animate-pulse">{hint}</div>}
+                {!state ? (
+                  <button disabled className="sme-btn sme-btn-ghost">接続中…</button>
+                ) : myReady ? (
+                  <button disabled={lobbyBusy} onClick={() => toggleReady(false)} className="sme-btn sme-btn-ghost">
+                    準備を取り消す
+                  </button>
+                ) : (
+                  <button
+                    disabled={lobbyBusy || !deckComplete}
+                    onClick={() => toggleReady(true)}
+                    className={`sme-btn sme-btn-sun ${deckComplete ? "sme-glow" : ""}`}
+                  >
+                    準備完了
+                  </button>
+                )}
+              </>
+            ) : (
+              <button
+                disabled={!deckComplete}
+                onClick={startCpu}
+                className={`sme-btn sme-btn-earth ${deckComplete ? "sme-glow" : ""}`}
+              >
+                準備完了（対戦開始）
+              </button>
+            )}
+          </div>
+        </div>
+
+        {detail && <DetailModal card={detail} onClose={() => setDetail(null)} />}
+      </main>
+    );
+  }
+
+  /* ============ 画面: CPU戦 ============ */
+  if (screen === "cpu") {
+    return (
+      <CpuGame
+        state={cpuState}
+        setState={setCpuState}
+        cpuDeck={cpuDeck}
+        detail={detail}
+        setDetail={setDetail}
+        onRematch={rematchCpu}
+        onTitle={() => leaveGame("menu")}
+        onRetire={retire}
+      />
+    );
+  }
+
+  /* ============ 画面: オンライン対戦 ============ */
+  const shown = resultState && (!state || state.phase !== "end") ? resultState : state;
+  let rematchNote = null;
+  if (resultState && state && state.phase !== "end") {
+    const oppR = E.otherId(resultState, myId);
+    const present = !!oppR && (state.host === oppR || state.guest === oppR);
+    if (!present) {
+      rematchNote = "相手は退室しました（再戦を押すと、この部屋で次の相手を待てます）";
+    } else if (state.phase === "lobby" && state.lobbyIn && state.lobbyIn[oppR]) {
+      rematchNote = "相手は再戦の準備を始めています";
+    }
+  }
+
+  return (
+    <GameScreen
+      state={shown}
+      myId={myId}
+      room={room}
+      apply={pushOnline}
+      detail={detail}
+      setDetail={setDetail}
+      onRematch={rematchOnline}
+      rematchNote={rematchNote}
+      onTitle={leaveOnline}
+      onRetire={retire}
+      onRefresh={refreshOnline}
+    />
   );
 }
-// このカード（手札・場のカード情報）の効果が人狼で消えているか（元のコストで判定）
-export function cardSilenced(s, card) {
-  return !!card && card.cost <= WOLF_COST && wolfOnField(s);
-}
-// 場のキャラの効果が消えているか（人狼化済み、または人狼がいてコスト4以下）
-export function isSilenced(s, u) {
-  return !!u && (!!u.wolfed || (u.cost <= WOLF_COST && wolfOnField(s)));
-}
-// pid の相手の場にトランプのキングがいるか（マジック使用・マジック生贄の禁止）
-export function kingLocked(s, pid) {
-  const o = s.players[otherId(s, pid)];
-  return !!o && o.field.some((x) => effectId(x) === "trump_king" && !isSilenced(s, x));
-}
-// pid が今、ジョーカーの効果で行動できないか
-export function jokerLocked(s, pid) {
-  const j = s.jokerLock;
-  return !!j && j.target === pid && j.active && s.turn === pid;
-}
-// pid が今、クイーンの効果で使える陣営を制限されているか（制限中ならその陣営、なければ null）
-export function queenFaction(s, pid) {
-  const q = s.queenLock;
-  if (!q || q.target !== pid || s.turn !== pid) return null;
-  const p = s.players[pid];
-  const has = p.hand.some((h) => handInfo(h)?.faction === q.faction);
-  return has ? q.faction : null;
+
+/* ============ CPU戦（CPUの手番を自動で進める） ============ */
+function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTitle, onRetire }) {
+  const [replaying, setReplaying] = useState(false);
+
+  useEffect(() => {
+    if (!state || state.phase !== "play" || state.turn !== CPU_ID) return;
+    if (replaying) return; // 行動の表示が終わるまで待つ
+    // ドロー（ターン開始）は長めに待ってバナーを見せる
+    const delay = E.phaseOf(state) === "draw" ? 1400 : 850;
+    const t = setTimeout(() => {
+      const next = cpuStep(state, CPU_ID, cpuDeck?.style);
+      if (next) setState(stampLog(next, state));
+    }, delay);
+    return () => clearTimeout(t);
+  }, [state, cpuDeck, setState, replaying]);
+
+  return (
+    <GameScreen
+      state={state}
+      myId={YOU_ID}
+      room={null}
+      apply={(next) => setState(next)}
+      detail={detail}
+      setDetail={setDetail}
+      cpuDeck={cpuDeck}
+      onRematch={onRematch}
+      onTitle={onTitle}
+      onRetire={onRetire}
+      onReplayingChange={setReplaying}
+    />
+  );
 }
 
-// 画面表示用：場全体にかかっている効果
-export function fieldNotes(s) {
-  const out = [];
-  if (wolfOnField(s)) {
-    out.push(`【人狼】コスト${WOLF_COST}以下のキャラはスタッツ1・効果なし／コスト${WOLF_COST}以下のカードの効果は発動せず、マジックも使えない`);
-  }
-  return out;
-}
-// 画面表示用：pid にかかっている制限
-export function playerNotes(s, pid) {
-  const out = [];
-  if (kingLocked(s, pid)) out.push("【キング】マジックを使えず、マジックを生贄にもできない");
-  const q = s.queenLock;
-  if (q && q.target === pid) {
-    const f = FACTION_LABEL[q.faction] || q.faction;
-    out.push(`【クイーン】${s.turn === pid ? "このターン" : "次のターン"}、手札に${f}のカードがあれば${f}のカードしか召喚・使用できない`);
-  }
-  const j = s.jokerLock;
-  if (j && j.target === pid) {
-    out.push(`【ジョーカー】${j.active && s.turn === pid ? "このターン" : "次のターン"}はドローと生贄しかできない`);
-  }
-  return out;
-}
-
-// 人狼がいる間、コスト4以下のキャラを人狼化（スタッツ1・効果なし・永続）
-function applyWolf(s, logs) {
-  if (!wolfOnField(s)) return;
-  let n = 0;
-  Object.values(s.players || {}).forEach((p) => {
-    (p.field || []).forEach((u) => {
-      if (u.wolfed || u.cost > WOLF_COST || isInvincible(u)) return;
-      u.wolfed = true;
-      u.stat = 1;
-      u.keywords = (u.keywords || []).filter((k) => WOLF_KEEP_KW.includes(k));
-      n++;
-    });
-  });
-  if (n) logs.push(`トランプの人狼: ${n}体が人狼化（スタッツ1・効果なし）`);
+/* ============ カード詳細モーダル（デッキ構築用） ============ */
+function DetailModal({ card, onClose }) {
+  const c = card;
+  return (
+    <div onClick={onClose} className="fixed inset-0 bg-black/75 flex items-center justify-center p-6 z-50">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`sme-modal ${fxClass(c.faction)} rounded-2xl p-5 max-w-sm w-full`}
+      >
+        <div className="text-xs mb-1 fx-text font-bold">
+          {FACTION_LABEL[c.faction]} / コスト {c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
+        </div>
+        <div className="sme-heading text-xl mb-2">{c.name}</div>
+        {c.stat && (
+          <div className="mb-3">
+            <span className="unit-stat">{c.stat}</span>
+          </div>
+        )}
+        <p className="text-sm leading-relaxed text-slate-200">{c.text}</p>
+        <button onClick={onClose} className="sme-btn sme-btn-ghost sme-btn-sm mt-5">
+          閉じる
+        </button>
+      </div>
+    </div>
+  );
 }
 
-/* ============ ユニット生成 ============ */
-function tokenUnit(info) {
-  const kws = [...info.keywords];
-  return {
-    uid: uid(),
-    cardId: null,
-    token: true,
-    tokenId: info.tokenId || null,
-    copyOf: info.copyOf || null,
-    name: info.name,
-    stat: info.stat,
-    cost: info.cost,
-    canAttack: kws.includes("speed") || kws.includes("rush"),
-    attacked: false,
-    noFaceAttack: kws.includes("rush"),
-    keywords: kws,
-    firstAttackUsed: false,
+/* ============ フェーズ表示 ============ */
+function PhaseBar({ phase, mine }) {
+  const steps = ["draw", "main", "sacrifice"];
+  return (
+    <div className="flex gap-1 mb-2">
+      {steps.map((s, i) => (
+        <div key={s} className={`phase-step ${phase === s ? `on ${mine ? "" : "theirs"}` : ""}`}>
+          {i + 1}. {PHASE_LABEL[s]}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============ マナクリスタル ============ */
+function ManaBar({ cost, max }) {
+  const n = Math.max(max, cost);
+  return (
+    <div className="mana-row">
+      {Array.from({ length: n }).map((_, i) => (
+        <div key={i} className={`mana-dot ${i < cost ? "on" : "used"}`} />
+      ))}
+    </div>
+  );
+}
+
+/* ============ 空き枠 ============ */
+function EmptySlots({ count }) {
+  return Array.from({ length: Math.max(0, count) }).map((_, i) => (
+    <div key={`empty-${i}`} className="unit-slot" />
+  ));
+}
+
+/* ============ リタイア確認 ============ */
+function RetireConfirm({ isCpu, onYes, onNo }) {
+  return (
+    <div onClick={onNo} className="fixed inset-0 bg-black/75 flex items-center justify-center p-6 z-[60]">
+      <div onClick={(e) => e.stopPropagation()} className="sme-modal rounded-2xl p-5 max-w-xs w-full text-center">
+        <div className="sme-heading text-lg mb-2">リタイアしますか？</div>
+        <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+          {isCpu
+            ? "この対戦は終了し、タイトル画面に戻ります。"
+            : "相手の勝利となり、部屋を出てタイトル画面に戻ります。"}
+        </p>
+        <button onClick={onYes} className="sme-btn sme-btn-danger mb-2">
+          リタイアする
+        </button>
+        <button onClick={onNo} className="sme-btn sme-btn-ghost sme-btn-sm">
+          対戦を続ける
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============ ゲーム画面（オンライン・CPU共通） ============ */
+function GameScreen({
+  state, myId, room, apply, detail, setDetail, cpuDeck,
+  onRematch, rematchNote, onTitle, onRetire, onReplayingChange, onRefresh,
+}) {
+  const [sel, setSel] = useState(null); // 選択中の自軍ユニット
+  const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
+  const [pendingAttack, setPendingAttack] = useState(null); // 月のゴブリンの追加対象待ち
+  const [banner, setBanner] = useState(null);
+  const [zone, setZone] = useState(null); // 生贄置き場の表示（"me" / "opp"）
+  const [queue, setQueue] = useState([]); // 相手の行動の再生待ち
+  const [showLog, setShowLog] = useState(false);
+  const [confirmRetire, setConfirmRetire] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const lastTurnKey = useRef(null);
+  const busy = useRef(false);
+  const prevRef = useRef(null);
+  const logRef = useRef(null);
+  const historyRef = useRef([]); // 不具合報告用：直前の状態の記録
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportNote, setReportNote] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportMsg, setReportMsg] = useState("");
+
+  const isCpu = !!cpuDeck;
+
+  // 決着したら連勝記録を更新（CPU戦とルームマッチは別々）
+  const [streak, setStreak] = useState(null);
+  const endKey = state && state.phase === "end" ? gameKey(state, isCpu ? null : room) : null;
+  useEffect(() => {
+    if (!endKey || !state || !state.winner) return;
+    setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endKey]);
+
+  // 状態が変わるたびに記録（新しい順ではなく古い順。最大 REPORT_HISTORY 件）
+  useEffect(() => {
+    if (!state) return;
+    try {
+      const json = JSON.stringify(state);
+      const h = historyRef.current;
+      if (h[h.length - 1] !== json) {
+        historyRef.current = [...h, json].slice(-REPORT_HISTORY);
+      }
+    } catch {
+      // 記録できなくてもゲームは続ける
+    }
+  }, [state]);
+
+  // 不具合報告を Firebase（reports コレクション）に保存
+  async function sendReport() {
+    if (reportBusy) return;
+    setReportBusy(true);
+    setReportMsg("");
+    try {
+      const ref = await addDoc(collection(db, "reports"), {
+        createdAt: new Date().toISOString(),
+        version: APP_VERSION,
+        mode: isCpu ? "cpu" : "room",
+        room: room || null,
+        myId: myId || null,
+        cpuDeck: cpuDeck ? cpuDeck.name || null : null,
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+        note: reportNote || "",
+        state: JSON.stringify(state),
+        history: historyRef.current,
+      });
+      setReportMsg(`送信しました（報告ID: ${ref.id}）`);
+      setReportNote("");
+    } catch (e) {
+      setReportMsg(`送信に失敗しました: ${e?.code || e?.message || "不明なエラー"}`);
+    } finally {
+      setReportBusy(false);
+    }
+  }
+  const oppLabel = isCpu ? "CPU" : "相手";
+
+  // ターン切り替わり時のバナー
+  useEffect(() => {
+    if (!state || state.phase !== "play") return;
+    const key = `${state.turnCount}-${state.turn}`;
+    if (lastTurnKey.current === key) return;
+    lastTurnKey.current = key;
+    setSel(null);
+    setPendingPlay(null);
+    setPendingAttack(null);
+    const mine = state.turn === myId;
+    setBanner({ key, mine, text: mine ? "あなたのターン" : `${oppLabel}のターン` });
+  }, [state?.turnCount, state?.turn, state?.phase, myId, oppLabel]);
+
+  // バナーは相手の行動の再生がすべて終わってから表示
+  useEffect(() => {
+    if (!banner || queue.length) return;
+    const t = setTimeout(() => setBanner(null), 1600);
+    return () => clearTimeout(t);
+  }, [banner, queue.length]);
+
+  // 相手の新しい行動を検出して再生待ちに追加
+  useEffect(() => {
+    if (!state || !state.players) return;
+    const prev = prevRef.current;
+    const curLog = state.log || [];
+    const curSeq = maxSeq(curLog);
+    prevRef.current = { log: curLog, players: state.players, seq: curSeq };
+    if (!prev || state.phase === "waiting" || state.phase === "lobby") return;
+    const oppId = E.otherId(state, myId);
+    if (!oppId) return;
+    // 通し番号があれば番号で、無ければ（古いルーム）従来の突き合わせで判定
+    const fresh =
+      curSeq > 0
+        ? curLog.filter((l) => l && typeof l === "object" && (l.n || 0) > prev.seq)
+        : newEntries(prev.log, curLog);
+    const lines = fresh
+      .filter((l) => typeof l !== "string" && l.by !== myId)
+      .map((l) => l.t)
+      .filter((t) => !TRIVIAL_LOG.test(t));
+    if (!lines.length) return;
+    const changes = diffBoards(prev.players, state.players, myId, oppId, lines);
+    setQueue((q) => [...q, { id: E.uid(), lines, changes }]);
+  }, [state, myId]);
+
+  const current = queue[0] || null;
+
+  // 再生中の行動を自動で次へ
+  useEffect(() => {
+    if (!current) return;
+    const t = setTimeout(() => setQueue((q) => q.slice(1)), replayMs(current));
+    return () => clearTimeout(t);
+  }, [current?.id]);
+
+  // CPU戦：再生中はCPUを止める
+  useEffect(() => {
+    if (onReplayingChange) onReplayingChange(queue.length > 0);
+  }, [queue.length, onReplayingChange]);
+
+  // ログを常に最新までスクロール
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [state?.log]);
+
+  if (!state) {
+    return (
+      <div className="p-8 text-center">
+        <div className="sme-label mb-4">LOADING...</div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto mx-auto">
+          タイトルへ戻る
+        </button>
+      </div>
+    );
+  }
+
+  if (state.phase === "waiting") {
+    return (
+      <main className="min-h-screen p-8 max-w-lg mx-auto text-center flex flex-col justify-center">
+        <h2 className="sme-heading text-lg mb-6">対戦相手を待っています</h2>
+        <div className="sme-panel p-6">
+          <div className="sme-label mb-2">ROOM ID</div>
+          <div className="sme-title text-5xl tracking-[0.3em] my-4">{room}</div>
+          <p className="text-xs text-slate-400">このIDを相手に伝えてください</p>
+        </div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost mt-6">
+          キャンセルしてタイトルへ
+        </button>
+      </main>
+    );
+  }
+
+  const oppId = E.otherId(state, myId);
+  const me = state.players ? state.players[myId] : null;
+  const opp = state.players && oppId ? state.players[oppId] : null;
+
+  /* ---- ログ表示 ---- */
+  const renderLog = (l, i) => {
+    if (typeof l === "string") return <div key={i} className="text-slate-500">{l}</div>;
+    const mine = l.by === myId;
+    return (
+      <div key={i} className={mine ? "text-emerald-300" : "text-rose-300"}>
+        <span className={`inline-block text-[9px] px-1 mr-1 rounded ${mine ? "bg-emerald-900" : "bg-rose-900"}`}>
+          {mine ? "自分" : oppLabel}
+        </span>
+        {l.t}
+      </div>
+    );
   };
-}
 
-function instFromCard(cardId) {
-  const c = getCard(cardId);
-  const kws = [...c.keywords];
-  return {
-    uid: uid(),
-    cardId,
-    token: false,
-    copyOf: null,
-    name: c.name,
-    stat: c.stat,
-    cost: c.cost,
-    canAttack: kws.includes("speed") || kws.includes("rush"),
-    attacked: false,
-    noFaceAttack: kws.includes("rush"),
-    keywords: kws,
-    firstAttackUsed: false,
+  /* ============ 決着画面 ============ */
+  if (state.phase === "end") {
+    const win = state.winner === myId;
+    return (
+      <main className="min-h-screen p-8 text-center max-w-lg mx-auto flex flex-col justify-center">
+        <h1 className={`result-title ${win ? "win" : "lose"} my-6`}>
+          {win ? "VICTORY" : "DEFEAT"}
+        </h1>
+        <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
+        {win && streak && streak.cur > 0 && (
+          <div className="sme-panel mb-6 p-3">
+            <div className="text-xs text-slate-400 mb-1">{isCpu ? "CPU戦" : "ルームマッチ"}</div>
+            <div className="text-2xl font-bold text-amber-300">🔥 {streak.cur}連勝中！</div>
+            <div className="text-xs text-slate-300 mt-1">
+              {streak.isNewBest ? "最高記録更新！" : `最高記録: ${streak.best}連勝`}
+            </div>
+          </div>
+        )}
+        {isCpu && (
+          <div className="text-sm text-slate-300 mb-4">
+            CPUのデッキ: {cpuDeck.name}（Tier{cpuDeck.tier}）
+          </div>
+        )}
+        <div className="sme-panel text-xs mb-6 text-left p-3 space-y-0.5">
+          {(state.log || []).slice(-8).map(renderLog)}
+        </div>
+        {rematchNote && (
+          <div className="sme-panel text-xs mb-4 p-3 text-amber-200">{rematchNote}</div>
+        )}
+        <div className="flex flex-col gap-2">
+          {onRematch && (
+            <button onClick={onRematch} className="sme-btn sme-btn-sun sme-glow">
+              再戦する
+            </button>
+          )}
+          {onTitle && (
+            <button onClick={onTitle} className="sme-btn sme-btn-ghost">
+              {isCpu ? "タイトルへ戻る" : "退室してタイトルへ"}
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  if (!me || !opp) {
+    return (
+      <div className="p-8 text-center">
+        <div className="sme-label mb-4">LOADING...</div>
+        <button onClick={onTitle} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto mx-auto">
+          タイトルへ戻る
+        </button>
+      </div>
+    );
+  }
+
+  const isMyTurn = state.turn === myId;
+  const phase = E.phaseOf(state);
+  const mode = pendingPlay ? pendingPlay.kind : pendingAttack ? "goblin" : null;
+  const candidates = pendingPlay ? pendingPlay.candidates : pendingAttack ? pendingAttack.candidates : [];
+  const canMain = E.isActive(state, myId, "main") && !mode;
+  const lastOpp = lastOppActions(state.log, myId);
+
+  /* ---- 状態を進める（連打での二重実行を防ぐ） ---- */
+  async function run(next) {
+    if (!next || busy.current) return;
+    busy.current = true;
+    try {
+      await apply(stampLog(next, state));
+    } finally {
+      busy.current = false;
+    }
+  }
+
+  /* ---- 手動で最新の状態を取得 ---- */
+  async function manualRefresh() {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setTimeout(() => setRefreshing(false), 600);
+    }
+  }
+
+  function cancelMode() {
+    setPendingPlay(null);
+    setPendingAttack(null);
+  }
+
+  /* ---- カード使用 ---- */
+  function playCard(handIdx, haste) {
+    if (!E.canPlay(state, myId, handIdx, haste)) return;
+    const tk = E.playTargetKind(state, myId, handIdx);
+    if (tk && tk.candidates.length) {
+      setSel(null);
+      setPendingPlay({ handIdx, haste, kind: tk.kind, candidates: tk.candidates });
+      return;
+    }
+    run(E.playCard(state, myId, handIdx, { haste }));
+  }
+
+  /* ---- 攻撃 ---- */
+  function attack(attackerUid, targetUid, toFace) {
+    const ex = E.attackExtraCandidates(state, myId, attackerUid);
+    if (ex) {
+      setPendingAttack({ attackerUid, targetUid, toFace, candidates: ex });
+      return;
+    }
+    run(E.attack(state, myId, attackerUid, { targetUid, toFace }));
+  }
+
+  /* ---- 対象選択の確定 ---- */
+  function resolveTarget(targetUid) {
+    if (!candidates.includes(targetUid)) return;
+    if (pendingPlay) {
+      const { handIdx, haste } = pendingPlay;
+      setPendingPlay(null);
+      run(E.playCard(state, myId, handIdx, { haste, target: targetUid }));
+      return;
+    }
+    if (pendingAttack) {
+      const { attackerUid, targetUid: t, toFace } = pendingAttack;
+      setPendingAttack(null);
+      run(E.attack(state, myId, attackerUid, { targetUid: t, toFace, extraTarget: targetUid }));
+    }
+  }
+
+  /* ---- 攻撃可能判定 ---- */
+  const ao = sel && canMain ? E.attackOptions(state, myId, sel) : null;
+  const oppTargetable = (u) => {
+    if (mode && mode !== "reduce1" && mode !== "reattack") return candidates.includes(u.uid);
+    if (!mode && ao) return ao.units.includes(u.uid);
+    return false;
   };
-}
 
-/* ============ 内部処理（下書き状態 s を直接書き換える） ============ */
-function drawCards(p, n, costMod) {
-  for (let i = 0; i < n; i++) {
-    if (p.deck.length === 0) { p.dead = true; break; }
-    const c = { ...p.deck[0] };
-    if (costMod) c.costMod = (c.costMod || 0) + costMod;
-    p.deck = p.deck.slice(1);
-    if (p.deck.length === 0) p.dead = true;
-    if (p.hand.length < MAX_HAND) p.hand = [...p.hand, c];
-    else p.grave = [...p.grave, c];
-  }
-}
+  // 再生中の行動で光らせるユニット
+  const flashIds = current
+    ? current.changes.filter((c) => c.kind === "unit" || c.kind === "new").map((c) => c.uid)
+    : [];
 
-function activateCost(p) {
-  if (p.maxCost < MAX_COST) {
-    p.maxCost += 1;
-    p.cost += 1;
-  }
-}
+  const zoneList = zone === "me" ? me.sacrifice : zone === "opp" ? opp.sacrifice : [];
+  const canSac = E.canSacrifice(state, myId);
 
-// 使えるコストが最大コストを超えないようにする（分子 ≦ 分母）
-function clampCost(p) {
-  if (!p) return;
-  if (p.maxCost < 0) p.maxCost = 0;
-  if (p.cost > p.maxCost) p.cost = p.maxCost;
-  if (p.cost < 0) p.cost = 0;
-}
+  return (
+    <main className={`min-h-screen max-w-lg mx-auto text-sm ${mode === "faction" ? "pb-36" : mode ? "pb-20" : "pb-4"}`}>
+      {/* 相手情報 + ターン表示 */}
+      <div className="sticky top-0 z-10">
+        <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2" style={NO_BLUR}>
+          <div className="flex items-center gap-3">
+            <div key={`opp-hp-${opp.hp}`} className={`hp-orb opp ${opp.hp <= 3 ? "is-danger" : ""}`}>{opp.hp}</div>
+            <div className="flex-1 min-w-0">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-rose-200 truncate">
+                  {isCpu ? `CPU（${cpuDeck.name}・T${cpuDeck.tier}）` : "相手"}
+                </span>
+                <span className="text-[11px] font-bold text-indigo-200 shrink-0 ml-2">
+                  コスト {opp.cost}/{opp.maxCost}
+                </span>
+              </div>
+              <div className="mt-0.5"><ManaBar cost={opp.cost} max={opp.maxCost} /></div>
+              <div className="text-[11px] text-slate-300 mt-0.5">
+                手札 {opp.hand.length} ・ 山 {opp.deck.length} ・{" "}
+                <button onClick={() => setZone("opp")} className="underline text-sky-300">
+                  生贄 {opp.sacrifice.length}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className={`turn-strip relative ${isMyTurn ? "mine" : "theirs"}`}>
+          TURN {state.turnCount}｜{isMyTurn ? "あなた" : oppLabel}の{PHASE_LABEL[phase]}フェーズ
+          <button
+            onClick={() => setConfirmRetire(true)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-2 py-0.5 rounded bg-black/50 border border-white/30 text-white"
+          >
+            リタイア
+          </button>
+        </div>
+      </div>
 
-// 破壊（場から取り除く → 破壊時効果）
-function destroy(s, ownerId, unitUid, logs) {
-  const u = removeUnit(s, ownerId, unitUid, logs);
-  if (u) onDestroyed(s, ownerId, u, logs);
-}
+      {/* 相手の場 */}
+      <div className="px-2 py-1">
+        <div className="sme-label mb-0.5">{oppLabel}の場（右上の i で能力確認）</div>
+        <div className="flex gap-1 flex-wrap justify-center">
+          {opp.field.map((u) => (
+            <UnitCard
+              key={u.uid} u={u} foe
+              flash={flashIds.includes(u.uid)}
+              targetable={oppTargetable(u)}
+              sick={!u.attacked && !u.canAttack}
+              onInfo={() => setDetail({ unit: u })}
+              onTap={() => {
+                if (mode) {
+                  if (mode !== "reduce1" && mode !== "reattack") resolveTarget(u.uid);
+                  return;
+                }
+                if (ao && ao.units.includes(u.uid)) {
+                  attack(sel, u.uid, false);
+                  setSel(null);
+                } else {
+                  setDetail({ unit: u });
+                }
+              }}
+            />
+          ))}
+          <EmptySlots count={E.MAX_FIELD - opp.field.length} />
+        </div>
+      </div>
 
-// 場から取り除くだけ（破壊時効果はまだ発動しない）
-function removeUnit(s, ownerId, unitUid, logs) {
-  const owner = s.players[ownerId];
-  const u = owner.field.find((x) => x.uid === unitUid);
-  if (!u || isInvincible(u)) return null;
-  owner.field = owner.field.filter((x) => x.uid !== unitUid);
-  if (!u.token) owner.grave = [...owner.grave, { uid: u.uid, cardId: u.cardId }];
-  logs.push(`${u.name} が破壊された`);
-  return u;
-}
+      {/* 相手プレイヤーへの攻撃 */}
+      {ao && (
+        <div className="px-2 pb-1">
+          {ao.face ? (
+            <button
+              onClick={() => { attack(sel, null, true); setSel(null); }}
+              className="sme-btn sme-btn-danger sme-btn-sm sme-glow"
+            >
+              ⚔ {oppLabel}プレイヤーを攻撃
+            </button>
+          ) : (
+            <div className="sme-panel py-1.5 text-center text-[11px] text-slate-400">
+                 {ao.defender
+                   ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
+                   : E.hasKw(me.field.find((x) => x.uid === sel), "no_attack_player")
+                   ? "このキャラは相手プレイヤーを攻撃できません"
+                   : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
+            </div>
+          )}
+        </div>
+      )}
 
-// 破壊時効果
-function onDestroyed(s, ownerId, u, logs) {
-  const owner = s.players[ownerId];
-  const foeId = otherId(s, ownerId);
-  const foe = s.players[foeId];
+      {/* ログ */}
+      <div className="relative sme-log">
+        <div ref={logRef} className="px-3 py-1 text-[10px] h-16 overflow-y-auto space-y-0.5">
+          {(state.log || []).slice(-10).map(renderLog)}
+        </div>
+        <button
+          onClick={() => setShowLog(true)}
+          className="absolute top-1 right-2 text-[10px] px-2 py-0.5 rounded bg-indigo-900/80 border border-indigo-400/40 text-indigo-100"
+        >
+          全ログ
+        </button>
+      </div>
 
-  // 人狼化しているキャラ・人狼がいる間のコスト4以下は破壊時効果なし
-  if (isSilenced(s, u)) return;
+      {/* 自分の場 */}
+      <div className="px-2 pt-1 pb-6">
+        <div className="sme-label mb-0.5">自分の場</div>
+        <div className="flex gap-1 flex-wrap justify-center">
+          {me.field.map((u) => (
+            <UnitCard
+              key={u.uid} u={u} selected={sel === u.uid}
+              flash={flashIds.includes(u.uid)}
+              targetable={mode === "reattack" && candidates.includes(u.uid)}
+              ready={canMain && u.canAttack && !u.attacked}
+              sick={!u.attacked && !u.canAttack}
+              onInfo={() => setDetail({ unit: u })}
+              onTap={() => {
+                if (mode) {
+                  if (mode === "reattack") resolveTarget(u.uid);
+                  return;
+                }
+                if (canMain && u.canAttack && !u.attacked) {
+                  setSel(sel === u.uid ? null : u.uid);
+                } else {
+                  setDetail({ unit: u });
+                }
+              }}
+            />
+          ))}
+          <EmptySlots count={E.MAX_FIELD - me.field.length} />
+        </div>
+      </div>
 
-  switch (effectId(u)) {
-    case "trump_joker":
-      // 自分のターン中に破壊 → 直後の相手ターン／相手のターン中に破壊 → その次の相手ターン
-      s.jokerLock = { target: foeId, active: s.turn !== foeId };
-      logs.push("トランプのジョーカー: 次の相手のターン、相手はドローと生贄しかできない");
-      break;
-    case "moon_maiden":
-      drawCards(owner, 1);
-      logs.push("月の少女: 1ドロー");
-      break;
-    case "earth_maiden":
-      activateCost(owner);
-      logs.push("地球の少女: コスト1有効化");
-      break;
-    case "moon_frog":
-      owner.hp += 4;
-      logs.push("月のカエル: HP+4");
-      break;
-    case "earth_frog":
-      if (foe.maxCost > 0) {
-        foe.maxCost -= 1;
-        clampCost(foe); // 使えるコストが上限を超えたら上限まで下げる
-        logs.push("地球のカエル: 相手の最大コスト-1");
-      }
-      break;
-    case "moon_priest":
-      drawCards(owner, 2);
-      logs.push("月の僧侶: 2ドロー");
-      break;
-    case "moon_kamura": {
-      const targets = foe.field.filter((x) => !isInvincible(x));
-      if (targets.length) {
-        const maxC = Math.max(...targets.map((x) => x.cost));
-        const cands = targets.filter((x) => x.cost === maxC);
-        const t = cands[Math.floor(Math.random() * cands.length)];
-        owner.hp += t.cost;
-        logs.push(`月の戦士・カムラ: ${t.name} を破壊しHP+${t.cost}`);
-        destroy(s, foeId, t.uid, logs);
-      } else {
-        logs.push("月の戦士・カムラ: 破壊できる相手キャラがいない");
-      }
-      break;
-    }
-    case "earth_abyss":
-      foe.hp -= 6;
-      logs.push("地球の底より出でる者: 相手プレイヤーに6ダメージ");
-      break;
-    default:
-      break;
-  }
-}
+      {/* 自分情報 */}
+      <div className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2" style={NO_BLUR}>
+        <div className="flex items-center gap-3">
+          <div key={`me-hp-${me.hp}`} className={`hp-orb me ${me.hp <= 3 ? "is-danger" : ""}`}>{me.hp}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-bold text-emerald-200">あなた</span>
+              <span className="text-[11px] font-bold text-indigo-200">
+                コスト {me.cost}/{me.maxCost}
+              </span>
+            </div>
+            <div className="mt-0.5"><ManaBar cost={me.cost} max={me.maxCost} /></div>
+            <div className="text-[11px] text-slate-300 mt-0.5">
+              山 {me.deck.length} ・{" "}
+              <button onClick={() => setZone("me")} className="underline text-sky-300">
+                生贄 {me.sacrifice.length}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
-function damage(s, ownerId, unitUid, amount, logs) {
-  const owner = s.players[ownerId];
-  const u = owner.field.find((x) => x.uid === unitUid);
-  if (!u || isInvincible(u)) return;
-  u.stat -= amount;
-  if (u.stat <= 0) destroy(s, ownerId, unitUid, logs);
-}
-
-// 勝敗判定（pid＝操作したプレイヤー＝ターンプレイヤー）
-function judge(s, pid) {
-  const oid = otherId(s, pid);
-  const a = s.players[pid], b = s.players[oid];
-  if (a.dead) return oid;
-  if (b.dead) return pid;
-  const aDead = a.hp <= 0, bDead = b.hp <= 0;
-  if (aDead && bDead) return pid; // 相打ちはターンプレイヤーの勝ち
-  if (bDead) return pid;
-  if (aDead) return oid;
-  return null;
-}
-
-// ログ追加＋勝敗判定をして状態を確定
-function finish(s, pid, logs) {
-  // 念のため、両プレイヤーのコストが上限を超えていないか補正
-  Object.values(s.players || {}).forEach((p) => clampCost(p));
-  // トランプの人狼：場にいる間、コスト4以下のキャラを人狼化
-  applyWolf(s, logs);
-
-  const entries = logs.filter(Boolean).map((t) => ({ by: pid, t }));
-  const log = [...(s.log || []), ...entries];
-  const w = judge(s, pid);
-  if (w) {
-    s.winner = w;
-    s.phase = "end";
-    log.push({ by: pid, t: "決着！" });
-  }
-  s.log = log.slice(-LOG_LIMIT);
-  return s;
-}
-
-/* ============ 使用条件・対象 ============ */
-function usableNow(cardId, p) {
-  if (cardId === "earth_order") return p.field.some((x) => x.attacked && !isInvincible(x));
-  return true;
-}
-
-// 即時召喚（+4コスト）できるカードか
-// スピードアタッカーは不要なので除外。rush持ち（底より出でる者など）は+4で相手プレイヤーも攻撃可能になる
-export function hasteAllowed(card) {
-  return !!card && card.type === "character" && !card.keywords.includes("speed");
-}
-
-export function canPlay(s, pid, handIdx, haste = false) {
-  if (!isActive(s, pid, "main")) return false;
-  const p = s.players[pid];
-  const inst = p.hand[handIdx];
-  const card = handInfo(inst);
-  if (!card) return false;
-  if (haste && !hasteAllowed(card)) return false;
-  const cost = playCost(inst) + (haste ? HASTE_EXTRA : 0);
-  if (p.cost < cost) return false;
-  if (card.type === "character" && p.field.length >= MAX_FIELD) return false;
-  if (!usableNow(card.id, p)) return false;
-  // トランプ人狼コラボの制限
-  if (jokerLocked(s, pid)) return false;
-  if (card.type === "magic" && kingLocked(s, pid)) return false;
-  if (card.type === "magic" && cardSilenced(s, card)) return false;
-  const qf = queenFaction(s, pid);
-  if (qf && card.faction !== qf) return false;
-  return true;
-}
-
-// そのカードを使うときに選ぶ対象の種類と候補（uid の配列）
-// 対象を取らないカードは null
-// candidates が空のときは、対象なしで使える（効果は不発）
-export function playTargetKind(s, pid, handIdx) {
-  const p = s.players[pid];
-  const o = s.players[otherId(s, pid)];
-  const inst = p.hand[handIdx];
-  const card = handInfo(inst);
-  if (!card) return null;
-  const foes = o.field.filter((x) => !isInvincible(x)).map((x) => x.uid);
-  let kind = null;
-  let candidates = [];
-
-  if (card.type === "character") {
-    const sid = inst.cardId || card.copyOf || null;
-    if (cardSilenced(s, card)) return null; // 人狼がいる間、コスト4以下の召喚時効果は発動しない
-    if (sid === "trump_queen") return { kind: "faction", candidates: [...BASE_FACTIONS] };
-    if (sid === "sun_priest") kind = "damage3";
-    else if (sid === "moon_albert") kind = "destroyDraw";
-    else if (sid === "earth_emerada") kind = "destroy";
-    else if (sid === "pluto_jabberwock") kind = "destroy";
-    if (kind) candidates = foes;
-  } else {
-    switch (inst.cardId) {
-      case "sun_crest":
-        kind = "crest";
-        candidates = foes;
-        break;
-      case "moon_crest":
-        kind = "bounce";
-        candidates = o.field.filter((x) => !isInvincible(x) && x.cost <= 5).map((x) => x.uid);
-        break;
-      case "earth_crest":
-        kind = "reduce1";
-        candidates = p.hand.filter((_, i) => i !== handIdx).map((h) => h.uid);
-        break;
-      case "earth_order":
-        kind = "reattack";
-        candidates = p.field.filter((x) => x.attacked && !isInvincible(x)).map((x) => x.uid);
-        break;
-      default:
-        break;
-    }
-  }
-  return kind ? { kind, candidates } : null;
-}
-
-// 攻撃できる対象（units: 攻撃できる相手キャラの uid / face: 相手プレイヤーを攻撃できるか）
-export function attackOptions(s, pid, attackerUid) {
-  if (!isActive(s, pid, "main")) return null;
-  const p = s.players[pid];
-  const o = s.players[otherId(s, pid)];
-  const a = p.field.find((x) => x.uid === attackerUid);
-  if (!a || a.attacked || !a.canAttack) return null;
-  if (jokerLocked(s, pid)) return null;
-  const defender = o.field.some((x) => hasKw(x, "defender"));
-  const units = o.field
-    .filter((x) => (defender ? hasKw(x, "defender") : !hasKw(x, "untargetable_by_attack")))
-    .map((x) => x.uid);
-  const face = !defender && !a.noFaceAttack && !hasKw(a, "no_attack_player");
-  return { units, face, defender };
-}
-
-// 攻撃宣言時に追加で対象を選ぶキャラ（月のゴブリン）の候補。不要なら null
-export function attackExtraCandidates(s, pid, attackerUid) {
-  const p = s.players[pid];
-  const o = s.players[otherId(s, pid)];
-  const a = p.field.find((x) => x.uid === attackerUid);
-  if (!a || effectId(a) !== "moon_goblin" || isSilenced(s, a)) return null;
-  const c = o.field.filter((x) => !isInvincible(x)).map((x) => x.uid);
-  return c.length ? c : null;
-}
-
-export function canSacrifice(s, pid) {
-  if (!isActive(s, pid, "sacrifice")) return false;
-  const p = s.players[pid];
-  return !p.sacrificedThisTurn && p.maxCost < MAX_COST;
-}
-
-// その手札を生贄にできるか（トランプのキングがいる間はマジックを生贄にできない）
-export function canSacrificeCard(s, pid, handIdx) {
-  if (!canSacrifice(s, pid)) return false;
-  const card = handInfo(s.players[pid].hand[handIdx]);
-  if (!card) return false;
-  if (card.type === "magic" && kingLocked(s, pid)) return false;
-  return true;
-}
-
-/* ============ 操作（次の状態を返す／不正なら null） ============ */
-
-// ドローフェーズ：1枚引いてメインへ
-export function drawStep(s0, pid) {
-  if (!isActive(s0, pid, "draw")) return null;
-  const s = cloneState(s0);
-  drawCards(s.players[pid], 1);
-  s.turnPhase = "main";
-  return finish(s, pid, ["カードを1枚引いた"]);
-}
-
-// カードを使う
-// opts.haste: 即時召喚 / opts.target: 対象の uid（playTargetKind の候補から）
-export function playCard(s0, pid, handIdx, opts = {}) {
-  const haste = !!opts.haste;
-  const target = opts.target ?? null;
-  if (!canPlay(s0, pid, handIdx, haste)) return null;
-  const tk = playTargetKind(s0, pid, handIdx);
-  const hasT = !!(tk && tk.candidates.length);
-  if (hasT && !tk.candidates.includes(target)) return null;
-
-  const s = cloneState(s0);
-  const oid = otherId(s, pid);
-  const p = s.players[pid];
-  const o = s.players[oid];
-  const inst = p.hand[handIdx];
-  const card = handInfo(inst);
-  const cost = playCost(inst) + (haste ? HASTE_EXTRA : 0);
-  const logs = [];
-
-  p.cost -= cost;
-  p.hand = p.hand.filter((_, i) => i !== handIdx);
-
-  if (card.type === "character") {
-    const u = card.isToken ? tokenUnit(card) : instFromCard(inst.cardId);
-    if (haste) {
-      u.canAttack = true;
-      u.noFaceAttack = false; // 即時召喚なら相手プレイヤーも攻撃できる
-    }
-    p.field = [...p.field, u];
-    logs.push(`${card.name}${card.isToken ? "（トークン）" : ""} を召喚${haste ? "（即時）" : ""}`);
-
-    // 召喚時効果（手札から出したコピー・トークンは元カードの召喚時効果を発動する）
-    const sid = inst.cardId || card.copyOf || null;
-    const silenced = cardSilenced(s, card);
-    if (silenced) logs.push("人狼の力で召喚時効果は発動しない");
-    switch (silenced ? null : sid) {
-      case "trump_citizen":
-        p.pendingCost = (p.pendingCost || 0) + 1;
-        logs.push("トランプの市民: 次のターン開始時にコスト有効化");
-        break;
-      case "trump_jack": {
-        if (!o.hand.length) {
-          logs.push("トランプのジャック: 相手の手札がない");
-          break;
-        }
-        const h = o.hand[Math.floor(Math.random() * o.hand.length)];
-        const info = handInfo(h);
-        const nm = info?.name || h.name || "カード";
-        const copy = h.cardId
-          ? { uid: uid(), cardId: h.cardId, costMod: 0 }
-          : {
-              uid: uid(), cardId: null, token: true,
-              tokenId: h.tokenId || null, copyOf: h.copyOf || null,
-              name: nm, costMod: 0,
-            };
-        if (p.hand.length < MAX_HAND) {
-          p.hand = [...p.hand, copy];
-          logs.push(`トランプのジャック: 相手の手札の ${nm} をコピーして手札に加えた`);
-        } else {
-          if (copy.cardId) p.grave = [...p.grave, { uid: copy.uid, cardId: copy.cardId }];
-          logs.push(`トランプのジャック: ${nm} をコピーしたが手札が満杯のため墓地へ`);
-        }
-        break;
-      }
-      case "trump_queen":
-        if (hasT) {
-          s.queenLock = { target: oid, faction: target };
-          logs.push(`トランプのクイーン: 「${FACTION_LABEL[target] || target}」を選択`);
-        }
-        break;
-      case "sun_priest":
-        if (hasT) damage(s, oid, target, 4, logs);
-        break;
-      case "earth_priest":
-        activateCost(p);
-        logs.push("コスト1有効化");
-        break;
-      case "sun_albert":
-        p.field.forEach((x) => { if (x.uid !== u.uid && !isInvincible(x)) x.stat += 4; });
-        logs.push("自軍全体 +4");
-        break;
-      case "moon_albert":
-        if (hasT) destroy(s, oid, target, logs);
-        drawCards(p, 1);
-        logs.push("1ドロー");
-        break;
-      case "earth_albert": {
-        // 生贄置き場のコスト7以下のキャラ（トークン含む）のうち最もコストが高いもののコピーを出す
-        const chars = p.sacrifice
-          .map((x) => handInfo(x))
-          .filter((c) => c && c.type === "character" && c.cost <= 7);
-        if (chars.length && p.field.length < MAX_FIELD) {
-          const maxC = Math.max(...chars.map((c) => c.cost));
-          const cands = chars.filter((c) => c.cost === maxC);
-          const pick = cands[Math.floor(Math.random() * cands.length)];
-          const info = pick.isToken ? pick : tokenInfo({ copyOf: pick.id });
-          p.field = [...p.field, tokenUnit(info)];
-          logs.push(`生贄置き場の ${pick.name}（コスト${pick.cost}）をコピーして場に出した`);
-        } else if (!chars.length) {
-          logs.push("地球のアルベール: コピーできるキャラがいない");
-        }
-        break;
-      }
-      case "sun_hector": {
-        const empty = MAX_FIELD - p.field.length;
-        for (let i = 0; i < empty; i++) {
-          p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "hector_soldier" }))];
-        }
-        logs.push(`空き枠に兵士を${empty}体展開`);
-        break;
-      }
-      case "earth_emerada":
-        if (hasT) destroy(s, oid, target, logs);
-        break;
-      case "moon_witch":
-        s.skipNext = oid;
-        logs.push("次の相手ターンをスキップ");
-        break;
-      case "pluto_albert": {
-        // 手札をすべて山札に戻してシャッフル → 5枚引いてコスト-1
-        const back = p.hand.map((h) => ({ ...h, costMod: 0 }));
-        p.hand = [];
-        p.deck = shuffle([...p.deck, ...back]);
-        logs.push(`手札${back.length}枚を山札に戻してシャッフル`);
-        drawCards(p, 5, -1);
-        logs.push("5ドロー（コスト-1）");
-        break;
-      }
-      case "pluto_jabberwock": {
-        // ① 相手キャラ1体と、このカード以外の自軍キャラ全員を破壊
-        const destroyed = [];
-        if (hasT) {
-          const du = removeUnit(s, oid, target, logs);
-          if (du) destroyed.push({ owner: oid, u: du });
-        }
-        [...p.field].forEach((x) => {
-          if (x.uid === u.uid) return;
-          const du = removeUnit(s, pid, x.uid, logs);
-          if (du) destroyed.push({ owner: pid, u: du });
-        });
-        // ② 破壊時効果（カムラ・月の僧侶など）
-        destroyed.forEach((d) => onDestroyed(s, d.owner, d.u, logs));
-        // ③ 破壊したキャラごとに、それよりコストが高いキャラのコピーを山札から場に出す（山札はそのまま）
-        destroyed.forEach((d) => {
-          if (p.field.length >= MAX_FIELD) return;
-          const cands = p.deck
-            .filter((c) => c.cardId)
-            .map((c) => getCard(c.cardId))
-            .filter((c) => c && c.type === "character" && c.cost > d.u.cost);
-          let pool = cands;
-          if (!pool.length) {
-            // より高いコストのキャラがいなければ、山札でいちばんコストが高いキャラを出す
-            const all = p.deck
-              .filter((c) => c.cardId)
-              .map((c) => getCard(c.cardId))
-              .filter((c) => c && c.type === "character");
-            if (!all.length) {
-              logs.push("山札にキャラクターがいない");
-              return;
+      {/* 手札 */}
+      <div className="px-2 pt-1">
+        <div className="sme-label">手札 ({me.hand.length})</div>
+        <div className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
+          {me.hand.map((h, i) => {
+            const c = E.handInfo(h);
+            if (!c) {
+              return (
+                <div key={h.uid} className="hand-card fx-none is-dim shrink-0">
+                  <div className="text-[9px] text-slate-400">トークン</div>
+                  <div className="text-[10px] font-bold leading-tight mt-1">{h.name}</div>
+                  <div className="text-[9px] text-slate-500">使用不可</div>
+                </div>
+              );
             }
-            const top = Math.max(...all.map((c) => c.cost));
-            pool = all.filter((c) => c.cost === top);
-          }
-          const pick = pool[Math.floor(Math.random() * pool.length)];
-          p.field = [...p.field, tokenUnit(tokenInfo({ copyOf: pick.id }))];
-          logs.push(`${pick.name}（コスト${pick.cost}）のコピーを場に出した`);
-        });
-        break;
-      }
-      default:
-        break;
-    }
-  } else {
-    // マジック
-    p.grave = [...p.grave, { uid: inst.uid, cardId: inst.cardId }];
-    logs.push(`${card.name} を使用`);
-    switch (inst.cardId) {
-      case "sun_crest":
-        if (hasT) {
-          damage(s, oid, target, 4, logs);
-          [...o.field].forEach((x) => {
-            if (x.uid !== target) damage(s, oid, x.uid, 1, logs);
-          });
-        }
-        break;
-      case "moon_crest":
-        if (hasT) {
-          const t = o.field.find((x) => x.uid === target);
-          if (t) {
-            o.field = o.field.filter((x) => x.uid !== target);
-            if (o.hand.length >= MAX_HAND) {
-              // 手札が満杯：トークンは破壊、カードは墓地へ（どちらも破壊時効果なし）
-              if (t.token) {
-                logs.push(`${t.name}（トークン）は手札が満杯のため破壊された（破壊時効果なし）`);
-              } else {
-                o.grave = [...o.grave, { uid: t.uid, cardId: t.cardId, costMod: 0 }];
-                logs.push(`${t.name} は手札が満杯のため墓地へ`);
-              }
-            } else {
-              const back = t.token
-                ? {
-                    uid: uid(), cardId: null, token: true,
-                    tokenId: t.tokenId || null, copyOf: t.copyOf || null,
-                    name: t.name, costMod: 0,
+            const cost = E.playCost(h);
+            const can = !mode && E.canPlay(state, myId, i, false);
+            const canHaste = !mode && E.canPlay(state, myId, i, true);
+            const isCand = mode === "reduce1" && candidates.includes(h.uid);
+            const bright = isCand || can || (canSac && E.canSacrificeCard(state, myId, i));
+            const look = isCand ? "is-target" : bright ? "is-playable" : "is-dim";
+            return (
+              <button
+                key={h.uid}
+                onClick={() => {
+                  if (mode) {
+                    if (mode === "reduce1") resolveTarget(h.uid);
+                    return;
                   }
-                : { uid: t.uid, cardId: t.cardId, costMod: 0 };
-              o.hand = [...o.hand, back];
-              logs.push(`${t.name}${t.token ? "（トークン）" : ""} を手札に戻した`);
-            }
-          }
-          drawCards(p, 1);
-        }
-        break;
-      case "earth_crest":
-        p.pendingCost = (p.pendingCost || 0) + 1;
-        if (hasT) {
-          const h = p.hand.find((x) => x.uid === target);
-          if (h) {
-            h.costMod = (h.costMod || 0) - 1;
-            logs.push("手札1枚のコスト-1");
-          }
-        }
-        break;
-      case "sun_order":
-        for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-          p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "sun_soldier" }))];
-        logs.push("太陽の兵士（スタッツ3）を展開");
-        break;
-      case "moon_order":
-        drawCards(p, 2);
-        logs.push("2ドロー");
-        break;
-      case "earth_order":
-        if (hasT) {
-          const t = p.field.find((x) => x.uid === target);
-          if (t) {
-            t.attacked = false;
-            t.canAttack = true;
-            logs.push(`${t.name} が再攻撃可能`);
-          }
-        }
-        break;
-      case "sun_judgment":
-        [...o.field].forEach((x) => damage(s, oid, x.uid, 6, logs));
-        logs.push("相手全体に6ダメージ");
-        break;
-      case "moon_judgment":
-        drawCards(p, 2, -4);
-        logs.push("2ドロー（コスト-4）");
-        break;
-      case "earth_judgment":
-        for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-          p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "earth_guardian" }))];
-        p.field.forEach((x) => {
-          if (!isInvincible(x) && !x.keywords.includes("defender")) x.keywords.push("defender");
-        });
-        logs.push("大地の守人（スタッツ6）を展開・全体ディフェンダー");
-        break;
-      case "pluto_crest": {
-        p.hp -= 3;
-        o.hp -= 3;
-        logs.push("自分と相手のHP-3");
-        if (o.hand.length) {
-          const i = Math.floor(Math.random() * o.hand.length);
-          const h = o.hand[i];
-          o.hand = o.hand.filter((_, j) => j !== i);
-          if (h.cardId) o.grave = [...o.grave, { uid: h.uid, cardId: h.cardId }];
-          logs.push(`相手の手札の ${handInfo(h)?.name || "カード"} を破壊`);
-        }
-        break;
-      }
-      case "pluto_order":
-        for (let i = 0; i < 2 && p.field.length < MAX_FIELD; i++)
-          p.field = [...p.field, tokenUnit(tokenInfo({ tokenId: "pluto_soldier" }))];
-        logs.push("冥王星の兵士（スタッツ3・スピードアタッカー）を展開");
-        break;
-      case "pluto_judgment":
-        [...o.field].forEach((x) => damage(s, oid, x.uid, 2, logs));
-        o.hp -= 8;
-        logs.push("相手全体に2ダメージ・相手プレイヤーに8ダメージ");
-        break;
-      default:
-        break;
-    }
-  }
+                  setDetail({ card: c, handIdx: i, cost, can, canHaste });
+                }}
+                className={`hand-card ${fxClass(c.faction)} ${look} shrink-0`}
+              >
+                <div className="flex justify-between items-start">
+                  <span className="text-[9px] font-bold fx-text">
+                    {c.isToken ? "トークン" : FACTION_LABEL[c.faction]}
+                  </span>
+                  <span className={`cost-gem ${cost < c.cost ? "is-down" : ""}`}>
+                    <span>{cost}</span>
+                  </span>
+                </div>
+                <div className="text-[11px] font-bold leading-tight mt-1 text-white">{c.name}</div>
+                <div className="mt-1">
+                  {c.type === "magic" ? (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-900/80 border border-sky-400/40 text-sky-100">
+                      MAGIC
+                    </span>
+                  ) : (
+                    c.stat && <span className="unit-stat">{c.stat}</span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-  return finish(s, pid, logs);
+      {/* 操作 */}
+      <div className="px-3 pb-2">
+        <PhaseBar phase={phase} mine={isMyTurn} />
+
+        {/* コラボカードなどで今かかっている制限 */}
+        {(() => {
+          const notes = [
+            ...E.fieldNotes(state),
+            ...E.playerNotes(state, myId).map((t) => `あなた：${t}`),
+            ...E.playerNotes(state, E.otherId(state, myId)).map((t) => `${oppLabel}：${t}`),
+          ];
+          if (!notes.length) return null;
+          return (
+            <div className="sme-panel py-1.5 px-3 mb-2 text-[10px] leading-relaxed text-rose-100 border border-rose-400/40">
+              {notes.map((t, i) => <div key={i}>{t}</div>)}
+            </div>
+          );
+        })()}
+
+        {!isMyTurn && (
+          <div className="sme-panel py-2 px-3 text-xs flex items-center gap-2">
+            <span className="flex-1 text-center text-slate-300 animate-pulse">
+              {isCpu ? "CPUが考えています…" : `相手の${PHASE_LABEL[phase]}フェーズ中です…`}
+            </span>
+            {onRefresh && (
+              <button
+                onClick={manualRefresh}
+                className="shrink-0 text-[10px] px-2 py-1 rounded bg-indigo-900/80 border border-indigo-400/40 text-indigo-100"
+              >
+                {refreshing ? "取得中…" : "↻ 最新にする"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {isMyTurn && phase === "draw" && (
+          <button onClick={() => run(E.drawStep(state, myId))} className="sme-btn sme-btn-sun sme-glow !py-2.5">
+            カードを引く（山札 {me.deck.length}枚）
+          </button>
+        )}
+
+        {isMyTurn && phase === "main" && (
+          <button
+            disabled={!!mode}
+            onClick={() => { setSel(null); run(E.toSacrifice(state, myId)); }}
+            className="sme-btn sme-btn-sun !py-2.5"
+          >
+            メインフェーズ終了 → 生贄フェーズへ
+          </button>
+        )}
+
+        {isMyTurn && phase === "sacrifice" && (
+          <>
+            <div className="text-[11px] text-slate-400 mb-1 text-center">
+              {me.sacrificedThisTurn
+                ? "このターンは生贄済みです"
+                : me.maxCost >= E.MAX_COST
+                  ? "コスト上限のため生贄できません"
+                  : "手札をタップして生贄にできます（任意・1回まで）"}
+            </div>
+            <button onClick={() => run(E.endTurn(state, myId))} className="sme-btn sme-btn-moon !py-2.5">
+              {me.sacrificedThisTurn ? "ターン終了" : "生贄せずにターン終了"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* 対象選択バー */}
+      {mode && (
+        <div
+          className="fixed bottom-0 left-0 right-0 p-3 z-30 border-t border-sky-300/50"
+          style={{ background: "linear-gradient(160deg, #1f5a99, #0a2340)", boxShadow: "0 -6px 24px rgba(45,110,180,0.5)" }}
+        >
+          <div className="max-w-lg mx-auto flex items-center gap-2">
+            <div className="flex-1 text-sm font-bold text-sky-50">{MODE_MSG[mode] || "対象を選んでください"}</div>
+            <button onClick={cancelMode} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
+              キャンセル
+            </button>
+          </div>
+          {mode === "faction" && (
+            <div className="max-w-lg mx-auto grid grid-cols-4 gap-2 mt-2">
+              {candidates.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => resolveTarget(f)}
+                  className={`pick-card ${fxClass(f)} !py-2 text-xs font-bold fx-text`}
+                >
+                  {FACTION_LABEL[f] || f}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 相手の行動の再生 */}
+      {current && (
+        <ReplayOverlay
+          item={current}
+          rest={queue.length - 1}
+          oppLabel={oppLabel}
+          onNext={() => setQueue((q) => q.slice(1))}
+          onSkipAll={() => setQueue([])}
+        />
+      )}
+
+      {/* ターン切り替えバナー（相手の行動の再生が終わってから） */}
+      {banner && !current && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+          <div key={banner.key} className={`turn-banner ${banner.mine ? "mine" : "theirs"}`}>
+            {banner.text}
+          </div>
+        </div>
+      )}
+
+      {/* 全ログ */}
+      {showLog && (
+        <div onClick={() => setShowLog(false)} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
+          <div onClick={(e) => e.stopPropagation()} className="sme-sheet rounded-t-2xl p-5 w-full max-w-lg">
+            <div className="sme-heading text-sm mb-3">対戦ログ（新しいものが下）</div>
+            <div className="max-h-96 overflow-y-auto text-xs space-y-1">
+              {(state.log || []).map(renderLog)}
+            </div>
+
+            {/* 不具合報告 */}
+            {!reportOpen ? (
+              <button
+                onClick={() => { setReportOpen(true); setReportMsg(""); }}
+                className="sme-btn sme-btn-ghost sme-btn-sm mt-3"
+              >
+                不具合を報告
+              </button>
+            ) : (
+              <div className="mt-3 border border-white/15 rounded-lg p-3">
+                <div className="text-xs text-slate-300 mb-2">
+                  今の盤面・ログと、直前{REPORT_HISTORY}回分の状態を送ります。何が起きたか書いてください（任意）。
+                </div>
+                <textarea
+                  value={reportNote}
+                  onChange={(e) => setReportNote(e.target.value)}
+                  rows={3}
+                  placeholder="例：カムラのHP+ログは出たのにアルベールが残っている"
+                  className="w-full text-sm text-slate-900 rounded p-2"
+                />
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={sendReport}
+                    disabled={reportBusy}
+                    className="sme-btn sme-btn-sm"
+                  >
+                    {reportBusy ? "送信中..." : "送信する"}
+                  </button>
+                  <button
+                    onClick={() => { setReportOpen(false); setReportMsg(""); }}
+                    className="sme-btn sme-btn-ghost sme-btn-sm"
+                  >
+                    やめる
+                  </button>
+                </div>
+              </div>
+            )}
+            {reportMsg && <div className="text-xs text-amber-300 mt-2 break-all">{reportMsg}</div>}
+
+            <div className="text-[10px] text-slate-500 mt-3">ver: {APP_VERSION}</div>
+            <button onClick={() => setShowLog(false)} className="sme-btn sme-btn-ghost sme-btn-sm mt-2">
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 生贄置き場の一覧 */}
+      {zone && (
+        <div onClick={() => setZone(null)} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
+          <div onClick={(e) => e.stopPropagation()} className="sme-sheet rounded-t-2xl p-5 w-full max-w-lg">
+            <div className="sme-heading text-sm mb-3">
+              {zone === "me" ? "自分" : oppLabel}の生贄置き場（{zoneList.length}枚）
+            </div>
+            <div className="max-h-72 overflow-y-auto">
+              {zoneList.length === 0 ? (
+                <div className="text-xs text-slate-400">まだありません</div>
+              ) : (
+                zoneList.map((s, i) => {
+                  const c = E.handInfo(s);
+                  return (
+                    <div key={i} className={`flex justify-between py-2 border-b border-white/10 text-sm ${fxClass(c?.faction)}`}>
+                      <span className="fx-text font-bold">
+                        {c ? c.name : s.name || "不明"}
+                        {c?.isToken && <span className="text-slate-400 text-xs font-normal">（トークン）</span>}
+                      </span>
+                      <span className="text-slate-400 text-xs">
+                        {c ? `${c.type === "magic" ? "マジック" : "キャラ"} / コスト${c.cost}` : ""}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            <button onClick={() => setZone(null)} className="sme-btn sme-btn-ghost sme-btn-sm mt-3">
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 詳細/アクションモーダル */}
+      {detail && (
+        <ActionModal
+          detail={detail}
+          phase={phase}
+          isMyTurn={isMyTurn}
+          onClose={() => setDetail(null)}
+          onPlay={(haste) => {
+            const idx = detail.handIdx;
+            setDetail(null);
+            playCard(idx, haste);
+          }}
+          onSac={() => {
+            const idx = detail.handIdx;
+            setDetail(null);
+            run(E.sacrifice(state, myId, idx));
+          }}
+          canSac={canSac && detail.handIdx !== undefined && E.canSacrificeCard(state, myId, detail.handIdx)}
+        />
+      )}
+
+      {/* リタイア確認 */}
+      {confirmRetire && (
+        <RetireConfirm
+          isCpu={isCpu}
+          onNo={() => setConfirmRetire(false)}
+          onYes={() => { setConfirmRetire(false); onRetire && onRetire(); }}
+        />
+      )}
+    </main>
+  );
 }
 
-// 攻撃する
-// opts.targetUid: 攻撃する相手キャラ / opts.toFace: 相手プレイヤーを攻撃
-// opts.extraTarget: 月のゴブリンの -1 対象
-export function attack(s0, pid, attackerUid, opts = {}) {
-  const toFace = !!opts.toFace;
-  const targetUid = opts.targetUid ?? null;
-  const extraTarget = opts.extraTarget ?? null;
-  const ao = attackOptions(s0, pid, attackerUid);
-  if (!ao) return null;
-  if (toFace ? !ao.face : !ao.units.includes(targetUid)) return null;
-  const ex = attackExtraCandidates(s0, pid, attackerUid);
-  if (ex && !ex.includes(extraTarget)) return null;
+/* ============ 相手の行動の再生パネル ============ */
+function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
+  const lines = item.lines;
+  const main =
+    lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を生贄/.test(t)) || lines[0];
+  const sub = lines.filter((t) => t !== main);
 
-  const s = cloneState(s0);
-  const oid = otherId(s, pid);
-  const p = s.players[pid];
-  const o = s.players[oid];
-  const a = p.field.find((x) => x.uid === attackerUid);
-  const eid = isSilenced(s, a) ? null : effectId(a); // 人狼化していれば攻撃時効果なし
-  const logs = [];
+  let kind = "行動", color = "bg-slate-600";
+  if (/を攻撃|プレイヤーに\d+ダメージ/.test(main)) { kind = "攻撃"; color = "bg-red-600"; }
+  else if (/を召喚/.test(main)) { kind = "召喚"; color = "bg-amber-500 text-slate-900"; }
+  else if (/を使用/.test(main)) { kind = "マジック"; color = "bg-sky-600"; }
+  else if (/を生贄/.test(main)) { kind = "生贄"; color = "bg-indigo-600"; }
 
-  // 攻撃時誘発
-  if (eid === "sun_goblin") {
-    p.field.forEach((x) => { if (x.uid !== a.uid && !isInvincible(x)) x.stat += 1; });
-    logs.push("太陽のゴブリン: 自軍+1");
-  }
-  if (eid === "earth_goblin") {
-    // 予約済みの分も含めて最大コスト6未満なら、次の自分のターン開始時に1有効化
-    const planned = p.maxCost + (p.pendingCost || 0);
-    if (planned < 6) {
-      p.pendingCost = (p.pendingCost || 0) + 1;
-      logs.push("地球のゴブリン: 次のターン開始時にコスト有効化");
-    } else {
-      drawCards(p, 1);
-      logs.push("地球のゴブリン: 1ドロー");
-    }
-  }
-  if (eid === "earth_abyss" && !a.firstAttackUsed) {
-    a.firstAttackUsed = true;
-    o.hp -= 6;
-    logs.push("地球の底より出でる者: 相手に6ダメージ");
-    if (o.hp <= 0) {
-      a.attacked = true;
-      a.canAttack = false;
-      return finish(s, pid, logs);
-    }
-  }
-  if (eid === "pluto_frog" && !toFace) {
-    p.hp -= 3;
-    o.hp -= 3;
-    logs.push("冥王星のカエル: 自分と相手に3ダメージ");
-    if (o.hp <= 0 || p.hp <= 0) {
-      a.attacked = true;
-      a.canAttack = false;
-      return finish(s, pid, logs);
-    }
-  }
-  if (ex) {
-    const tg = o.field.find((x) => x.uid === extraTarget);
-    if (tg && !isInvincible(tg)) {
-      tg.stat -= 1;
-      logs.push(`月のゴブリン: ${tg.name} -1`);
-      if (tg.stat <= 0) destroy(s, oid, tg.uid, logs);
-    }
-  }
+  const duration = replayMs(item);
+  const sideName = (s) => (s === "me" ? "あなた" : oppLabel);
 
-  // 戦闘解決
-  a.attacked = true;
-  a.canAttack = false;
-  if (toFace) {
-    o.hp -= a.stat;
-    logs.push(`${a.name} が相手プレイヤーに${a.stat}ダメージ`);
-  } else {
-    const d = o.field.find((x) => x.uid === targetUid);
-    if (!d) {
-      logs.push(`${a.name} の攻撃対象がいなくなった`);
-    } else {
-      const aStat = a.stat, dStat = d.stat;
-      logs.push(`${a.name} が ${d.name} を攻撃`);
-      // ① ダメージを同時に与える
-      if (!isInvincible(d)) d.stat -= aStat;
-      if (!isInvincible(a)) a.stat -= dStat;
-      // ② 0以下になったキャラを先にまとめて場から取り除く（相殺完了）
-      const deadD = d.stat <= 0 ? removeUnit(s, oid, d.uid, logs) : null;
-      const deadA = a.stat <= 0 ? removeUnit(s, pid, a.uid, logs) : null;
-      // ③ その後で破壊時効果を発動
-      if (deadD) onDestroyed(s, oid, deadD, logs);
-      if (deadA) onDestroyed(s, pid, deadA, logs);
-    }
-  }
-  return finish(s, pid, logs);
+  return (
+    <div onClick={onNext} className="fixed inset-0 z-[45] bg-black/50 flex items-center justify-center p-4">
+      <style>{`@keyframes smeShrink { from { width: 100%; } to { width: 0%; } }`}</style>
+      <div
+        className="w-full max-w-sm sme-modal rounded-2xl overflow-hidden"
+        style={{ borderColor: "rgba(255,92,116,0.6)", boxShadow: "0 0 40px rgba(255,92,116,0.35)" }}
+      >
+        <div className="flex items-center justify-between px-4 pt-3">
+          <span className="sme-label !text-rose-300">{oppLabel}の行動</span>
+          <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${color}`}>{kind}</span>
+        </div>
+
+        <div className="p-4">
+          <div className="sme-heading text-base text-center leading-snug">{main}</div>
+
+          {item.changes.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {item.changes.map((c, i) => {
+                const mine = c.side === "me";
+                const box = `flex items-center justify-between rounded-lg px-2 py-1.5 text-xs border ${
+                  mine ? "border-emerald-700 bg-emerald-950/40" : "border-rose-800 bg-rose-950/40"
+                }`;
+                if (c.kind === "hp") {
+                  return (
+                    <div key={i} className={box}>
+                      <span className="font-bold">{sideName(c.side)}のHP</span>
+                      <span className="font-bold">
+                        <span className="text-slate-400">{c.before}</span>
+                        <span className="text-slate-500 mx-1">→</span>
+                        <span className={c.after < c.before ? "text-red-400" : "text-emerald-300"}>{c.after}</span>
+                      </span>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={i} className={box}>
+                    <span className="truncate mr-2">
+                      <span className="text-slate-400">{sideName(c.side)}の </span>
+                      <span className="font-bold">{c.name}</span>
+                    </span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      {c.kind === "unit" && c.acted && (
+                        <span className="text-[9px] bg-red-700 px-1 rounded">攻撃</span>
+                      )}
+                      {c.kind === "unit" && (
+                        c.before !== c.after ? (
+                          <span className="font-bold">
+                            <span className="text-slate-400">{c.before}</span>
+                            <span className="text-slate-500 mx-1">→</span>
+                            <span className={c.after < c.before ? "text-red-400" : "text-emerald-300"}>{c.after}</span>
+                          </span>
+                        ) : (
+                          <span className="font-bold">{c.after}</span>
+                        )
+                      )}
+                      {c.kind === "new" && (
+                        <>
+                          <span className="font-bold">{c.after}</span>
+                          <span className="text-[9px] bg-amber-600 px-1 rounded">登場</span>
+                        </>
+                      )}
+                      {c.kind === "gone" && (
+                        <>
+                          <span className="text-slate-400 line-through">{c.before}</span>
+                          <span className={`text-[9px] px-1 rounded ${c.destroyed ? "bg-red-600" : "bg-slate-600"}`}>
+                            {c.destroyed ? "破壊" : "退場"}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {sub.length > 0 && (
+            <div className="mt-3 bg-slate-950/70 rounded-lg p-2 text-[11px] text-slate-300 space-y-0.5">
+              {sub.map((l, i) => <div key={i}>・{l}</div>)}
+            </div>
+          )}
+        </div>
+
+        <div className="h-1 bg-slate-700">
+          <div
+            key={item.id}
+            className="h-1 bg-rose-500"
+            style={{ animation: `smeShrink ${duration}ms linear forwards` }}
+          />
+        </div>
+        <div className="flex items-center justify-between px-4 py-2 text-[10px] text-slate-400">
+          <span>タップで次へ{rest > 0 ? `（残り${rest}件）` : ""}</span>
+          {rest > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSkipAll(); }}
+              className="px-2 py-1 rounded bg-slate-700 text-slate-200"
+            >
+              すべてスキップ
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
-// メインフェーズ終了 → 生贄フェーズ
-export function toSacrifice(s0, pid) {
-  if (!isActive(s0, pid, "main")) return null;
-  const s = cloneState(s0);
-  s.turnPhase = "sacrifice";
-  return finish(s, pid, ["生贄フェーズへ"]);
+/* ============ ユニット表示 ============ */
+function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onInfo }) {
+  const info = E.unitInfo(u);
+  const base = info?.stat;
+  const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
+
+  let look = "";
+  if (selected) look = "is-selected";
+  else if (targetable) look = "is-target";
+  else if (flash) look = "is-flash";
+  else if (ready) look = "is-ready";
+
+  const cls = [
+    "unit",
+    fxClass(info?.faction),
+    foe ? "is-foe" : "",
+    look,
+    u.attacked ? "is-attacked" : "",
+    sick ? "opacity-60 grayscale" : "",
+  ].filter(Boolean).join(" ");
+
+  return (
+    <div className="unit-enter">
+      <button onClick={onTap} className={cls}>
+        {/* 召喚酔い中：頭上で★がクルクル回る */}
+        {sick && (
+          <span className="dizzy" aria-hidden="true" title="召喚酔い">
+            <span>★</span>
+            <span>★</span>
+            <span>★</span>
+          </span>
+        )}
+        {/* 能力確認ボタン（タップしても選択・攻撃はしない） */}
+        {onInfo && (
+          <span
+            role="button"
+            aria-label="能力を見る"
+            onClick={(e) => { e.stopPropagation(); onInfo(); }}
+            className="absolute -top-2 -right-2 z-10 w-5 h-5 rounded-full bg-sky-600 border border-white/70 text-[10px] font-bold text-white flex items-center justify-center shadow-lg"
+          >
+            i
+          </span>
+        )}
+        <div className="unit-name">{u.name}</div>
+        <div className="flex justify-between items-end mt-1">
+          <span className={`unit-stat ${statCls}`}>{u.stat}</span>
+          <div className="flex flex-col gap-0.5 items-end">
+            {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
+            {u.keywords?.includes("invincible") && <span className="unit-kw inv">無</span>}
+            {u.keywords?.includes("untargetable_by_attack") && <span className="unit-kw evd">避</span>}
+            {u.noFaceAttack && <span className="unit-kw rsh">突</span>}
+            {u.wolfed && <span className="unit-kw wolf" title="人狼化（効果なし）">狼</span>}
+          </div>
+        </div>
+      </button>
+    </div>
+  );
 }
 
-// 手札を生贄にする
-export function sacrifice(s0, pid, handIdx) {
-  if (!canSacrificeCard(s0, pid, handIdx)) return null;
-  const card = handInfo(s0.players[pid].hand[handIdx]);
-  if (!card) return null;
+/* ============ アクションモーダル ============ */
+function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }) {
+  const u = detail.unit;
+  const c = detail.card || (u ? E.unitInfo(u) : null);
+  const isHand = detail.handIdx !== undefined;
 
-  const s = cloneState(s0);
-  const p = s.players[pid];
-  const inst = p.hand[handIdx];
-  p.hand = p.hand.filter((_, i) => i !== handIdx);
-  const entry = card.isToken
-    ? {
-        uid: inst.uid, cardId: null, token: true,
-        tokenId: card.tokenId || null, copyOf: card.copyOf || null, name: card.name,
-      }
-    : { uid: inst.uid, cardId: inst.cardId };
-  p.sacrifice = [...p.sacrifice, entry];
-  p.maxCost += 1;
-  const mult = p.field.some((x) => effectId(x) === "pluto_priest" && !isSilenced(s, x)) ? 3 : 1;
-  const gain = card.cost * mult;
-  p.hp += gain;
-  p.sacrificedThisTurn = true;
-  const logs = [
-    `${card.name}${card.isToken ? "（トークン）" : ""} を生贄に（コスト上限+1 / HP+${gain}${mult > 1 ? "（冥王星の僧侶で3倍）" : ""} / 1ドロー）`,
-  ];
-  drawCards(p, 1);
-  return finish(s, pid, logs);
-}
+  return (
+    <div onClick={onClose} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`sme-sheet ${fxClass(c?.faction)} rounded-t-2xl p-5 w-full max-w-lg`}
+      >
+        {c ? (
+          <>
+            <div className="text-xs mb-1 fx-text font-bold">
+              {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} /{" "}
+              {c.isToken ? "トークン" : c.type === "magic" ? "マジック" : "キャラクター"}
+            </div>
+            <div className="sme-heading text-xl mb-2">{c.name}</div>
+            {c.stat && (
+              <div className="flex items-center gap-2 mb-3">
+                <span className="unit-stat">{u ? u.stat : c.stat}</span>
+                {u && u.stat !== c.stat && <span className="text-xs text-slate-400">(元 {c.stat})</span>}
+              </div>
+            )}
+            <p className="text-sm leading-relaxed text-slate-200 mb-4">{c.text}</p>
+          </>
+        ) : (
+          <>
+            <div className="text-xs mb-1 text-slate-400">トークン</div>
+            <div className="sme-heading text-xl mb-2">{u?.name}</div>
+            <div className="mb-4"><span className="unit-stat">{u?.stat}</span></div>
+          </>
+        )}
 
-// ターン終了
-export function endTurn(s0, pid) {
-  if (!isActive(s0, pid, "sacrifice")) return null;
-  const s = cloneState(s0);
-  const oid = otherId(s, pid);
-  const p = s.players[pid];
-  const o = s.players[oid];
-  const logs = ["ターン終了"];
+        {isHand && isMyTurn && phase === "main" && (
+          <div className="flex flex-col gap-2">
+            <button disabled={!detail.can} onClick={() => onPlay(false)} className="sme-btn sme-btn-sun">
+              使用（コスト {detail.cost}）
+            </button>
+            {detail.canHaste && (
+              <button onClick={() => onPlay(true)} className="sme-btn sme-btn-danger">
+                即時召喚（コスト {detail.cost + E.HASTE_EXTRA}）
+              </button>
+            )}
+          </div>
+        )}
 
-  // 自分のターン終了時効果：冥王星の少女
-  p.field.forEach((x) => {
-    if (effectId(x) === "pluto_maiden" && !isSilenced(s, x)) {
-      p.hp += 2;
-      o.hp -= 2;
-      logs.push("冥王星の少女: HP+2・相手に2ダメージ");
-    }
-  });
-  // ターン終了時に破壊されるトークン（冥王星の兵士）
-  [pid, oid].forEach((id) => {
-    s.players[id].field
-      .filter((x) => hasKw(x, "dies_end_of_turn"))
-      .forEach((x) => destroy(s, id, x.uid, logs));
-  });
-  // 相手のターン終了時：冥王星のセラフ・ラピス（場にいて HP40以上なら勝利）
-  if (!judge(s, pid) && o.hp >= 40 && o.field.some((x) => effectId(x) === "pluto_seraph")) {
-    s.winner = oid;
-    s.phase = "end";
-    logs.push("冥王星のセラフ・ラピス: HP40以上で特殊勝利！");
-  }
+        {isHand && isMyTurn && phase === "sacrifice" && (
+          <button disabled={!canSac} onClick={onSac} className="sme-btn sme-btn-moon">
+            生贄にする（コスト上限+1・HP+{c?.cost || 0}・1ドロー）
+          </button>
+        )}
 
-  p.field.forEach((x) => { x.attacked = false; x.canAttack = true; x.noFaceAttack = false; });
-  p.sacrificedThisTurn = false;
+        {isHand && isMyTurn && phase === "draw" && (
+          <div className="text-xs text-slate-400 text-center">先にカードを引いてください</div>
+        )}
 
-  // トランプのクイーン：制限された側のターンが終わったら解除
-  if (s.queenLock && s.queenLock.target === pid) s.queenLock = null;
-  // トランプのジョーカー：制限された側のターンが終わったら解除（まだ始まっていなければ次のターンから有効）
-  if (s.jokerLock && s.jokerLock.target === pid) {
-    s.jokerLock = s.jokerLock.active ? null : { ...s.jokerLock, active: true };
-  }
-
-  let nextTurn = oid;
-  let starter = o;
-  if (s.skipNext === oid) {
-    logs.push("相手のターンをスキップ（もう一度自分のターン）");
-    nextTurn = pid;
-    starter = p;
-  }
-
-  // 次のターンプレイヤーのターン開始処理（ドローはドローフェーズで行う）
-  if (starter.pendingCost) {
-    for (let i = 0; i < starter.pendingCost; i++) activateCost(starter);
-    starter.pendingCost = 0;
-  }
-  starter.cost = starter.maxCost;
-  starter.field.forEach((x) => { x.canAttack = true; x.attacked = false; });
-
-  s.turn = nextTurn;
-  s.turnPhase = "draw";
-  s.skipNext = null;
-  s.turnCount = (s.turnCount || 1) + 1;
-  return finish(s, pid, logs);
+        <button onClick={onClose} className="sme-btn sme-btn-ghost sme-btn-sm mt-3">
+          閉じる
+        </button>
+      </div>
+    </div>
+  );
 }
