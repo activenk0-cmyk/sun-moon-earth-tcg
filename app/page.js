@@ -897,7 +897,8 @@ export default function Home() {
   async function retire() {
     // リタイアは負けとして連勝記録をリセット
     if (screen === "cpu" && cpuState && cpuState.phase === "play" && !cpuState.winner) {
-      recordStreak("cpu", gameKey(cpuState, null), false);
+      // ランク戦以外（ランク導入前の試合）だけ、従来の連勝記録を更新
+      if (!cpuState.ranked) recordStreak("cpu", gameKey(cpuState, null), false);
       // ランク戦：開始時に負け分は引いてあるので、負けとして確定するだけ
       if (cpuState.ranked && cpuState.gameId && user && user.uid === cpuState.rankUid) {
         const uid = user.uid;
@@ -1255,7 +1256,9 @@ export default function Home() {
           <div className="flex justify-between mb-1">
             <span>CPU戦</span>
             <span>
-              現在 {(streaks.cpu && streaks.cpu.cur) || 0}連勝 / 最高 {(streaks.cpu && streaks.cpu.best) || 0}連勝
+              {/* CPU戦の連勝はランク戦の記録を使う（最高記録はランク導入前の記録も含める） */}
+              現在 {rankData ? rankData.streak : (streaks.cpu && streaks.cpu.cur) || 0}連勝 / 最高{" "}
+              {Math.max(rankData ? rankData.best || 0 : 0, (streaks.cpu && streaks.cpu.best) || 0)}連勝
             </span>
           </div>
           <div className="flex justify-between">
@@ -1875,6 +1878,7 @@ function GameScreen({
   const endKey = state && state.phase === "end" ? gameKey(state, isCpu ? null : room) : null;
   useEffect(() => {
     if (!endKey || !state || !state.winner) return;
+    if (isCpu && state.ranked) return; // ランク戦の連勝はランクのデータで管理する
     setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endKey]);
