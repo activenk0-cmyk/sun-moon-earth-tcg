@@ -11,13 +11,14 @@ import {
      points  … 現在のポイント（null なら読み込み中）
      streak  … 現在のランク戦連勝数
      compact … true なら小さめ表示
+     mini    … true ならさらに小さい1行表示（TOP画面用）
    ============================================================ */
-export default function RankBadge({ points, streak = 0, compact = false }) {
+export default function RankBadge({ points, streak = 0, compact = false, mini = false }) {
   const [open, setOpen] = useState(false);
 
   if (points == null) {
     return (
-      <div className="sme-panel p-3 text-xs text-slate-400 animate-pulse w-full text-center">
+      <div className={`sme-panel ${mini ? "p-1.5" : "p-3"} text-xs text-slate-400 animate-pulse w-full text-center`}>
         ランク情報を読み込み中...
       </div>
     );
@@ -27,6 +28,30 @@ export default function RankBadge({ points, streak = 0, compact = false }) {
   const next = getNextRank(points);
   const remain = pointsToNext(points);
   const prog = rankProgress(points);
+
+  if (mini) {
+    return (
+      <>
+        <style>{BADGE_CSS}</style>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rb-card w-full text-left px-2.5 py-1.5"
+          style={{ borderColor: r.color }}
+        >
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-bold" style={{ color: r.color }}>{r.icon} {r.name}</span>
+            <span className="font-bold tabular-nums text-slate-100">{fmt(points)} pt</span>
+            <span className="flex-1 rb-bar">
+              <span className="rb-bar-fill block" style={{ width: `${Math.round(prog * 100)}%`, background: r.color }} />
+            </span>
+            {streak > 0 && <span className="text-amber-300 tabular-nums">🔥{streak}</span>}
+          </div>
+        </button>
+        {open && <RankTableModal points={points} onClose={() => setOpen(false)} />}
+      </>
+    );
+  }
 
   return (
     <>
