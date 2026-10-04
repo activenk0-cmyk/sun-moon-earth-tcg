@@ -2037,7 +2037,11 @@ function GameScreen({
   if (state.phase === "end") {
     const win = state.winner === myId;
     return (
-      <main className="min-h-screen p-8 text-center max-w-lg mx-auto flex flex-col justify-center">
+      <main
+        className={`min-h-screen text-center max-w-lg mx-auto flex flex-col ${
+          isCpu && state.ranked ? "px-8 pt-6 pb-8 justify-start" : "p-8 justify-center"
+        }`}
+      >
         {isCpu && state.ranked ? (
           <RankResult
             win={win}
