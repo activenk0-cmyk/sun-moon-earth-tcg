@@ -1206,16 +1206,10 @@ export default function Home() {
               setMatchMode("cpu");
               setScreen("deck");
             }}
-            className={`sme-btn sme-btn-earth text-lg ${user ? "sme-glow" : "opacity-60"}`}
+            className="sme-btn sme-btn-earth sme-glow text-lg"
           >
-            CPU対戦（ランク戦）
+            CPU対戦
           </button>
-          {user ? (
-            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} />
-          ) : (
-            <div className="text-[11px] text-slate-400">CPU戦（ランク戦）はログインが必要です</div>
-          )}
-          {rankMsg && !user && <div className="text-[11px] text-rose-300">{rankMsg}</div>}
           <button
             onClick={() => { setMsg(""); setScreen("roomMenu"); }}
             className="sme-btn sme-btn-sun sme-glow text-lg"
@@ -1251,6 +1245,7 @@ export default function Home() {
           ) : (
             <div className="mb-3 text-slate-400">
               ログインすると連勝記録がアカウントに保存され、別の端末でも引き継げます
+              {rankMsg && <div className="text-rose-300 mt-1">{rankMsg}</div>}
             </div>
           )}
           <div className="flex justify-between mb-1">
@@ -2039,7 +2034,7 @@ function GameScreen({
     return (
       <main
         className={`min-h-screen text-center max-w-lg mx-auto flex flex-col ${
-          isCpu && state.ranked ? "px-8 pt-6 pb-8 justify-start" : "p-8 justify-center"
+          isCpu && state.ranked ? "px-8 pt-10 pb-8 justify-start" : "p-8 justify-center"
         }`}
       >
         {isCpu && state.ranked ? (
