@@ -145,15 +145,15 @@ export default function RankResult({ win, result, error }) {
 function RankChangeOverlay({ type, rankKey, onClose }) {
   const r = rankByKey(rankKey);
   const up = type === "promoted";
+  // 一番下に不透明な濃紺を敷き、その上にランク色の光を重ねる（後ろの画面は透けない）
+  const bg = up
+    ? `radial-gradient(circle at center, ${r.color}40 0%, ${r.color}14 35%, transparent 65%), #020617`
+    : "radial-gradient(circle at center, rgba(71,85,105,0.35) 0%, transparent 60%), #020617";
   return (
     <div
       onClick={onClose}
       className="fixed inset-0 z-[60] flex flex-col items-center justify-center text-center p-6 rr-ov"
-      style={{
-        background: up
-          ? `radial-gradient(circle at center, ${r.color}55 0%, rgba(2,6,23,0.95) 65%)`
-          : "radial-gradient(circle at center, rgba(71,85,105,0.45) 0%, rgba(2,6,23,0.96) 65%)",
-      }}
+      style={{ background: bg }}
     >
       <div className={up ? "rr-ov-icon-up" : "rr-ov-icon-down"} style={{ color: r.color }}>
         {r.icon}
