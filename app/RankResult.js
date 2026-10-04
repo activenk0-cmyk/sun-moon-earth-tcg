@@ -175,7 +175,7 @@ const RESULT_CSS = `
   line-height: 1;
   font-weight: 900;
   letter-spacing: 0.08em;
-  margin: 0 0 1rem;
+  margin: 0.75rem 0 1.25rem;
   animation: rr-pop 0.5s cubic-bezier(.2,1.6,.4,1) both;
 }
 .rr-win {
