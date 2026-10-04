@@ -14,6 +14,9 @@ import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
 import { DECKS, pickDeck } from "../lib/decks";
 import NewsButton from "./NewsButton";
 import TutorialButton from "./TutorialButton";
+import RankBadge from "./RankBadge";
+import RankResult from "./RankResult";
+import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -419,6 +422,12 @@ export default function Home() {
   // CPU戦
   const [cpuState, setCpuState] = useState(null);
   const [cpuDeck, setCpuDeck] = useState(null);
+  // ランク戦（CPU戦）
+  const [rankData, setRankData] = useState(null); // { points, streak, ... }（未ログインなら null）
+  const [rankBusy, setRankBusy] = useState(false);
+  const [rankMsg, setRankMsg] = useState("");
+  const [rankView, setRankView] = useState(null); // リザルト表示用 { gameId, win, result, error }
+  const settlingRef = useRef(null);
 
   // 起動時：保存データを復元
   useEffect(() => {
@@ -495,6 +504,7 @@ export default function Home() {
         setUser(null);
         setMyDecks([]);
         setStreaks(loadStreaks(null));
+        setRankData(null);
         return;
       }
       currentUid = u.uid;
@@ -502,6 +512,15 @@ export default function Home() {
       claimPlayerId(id, u.uid); // 以前からのアカウントも使用済みIDとして登録
       setUser((prev) => ({ uid: u.uid, id, nickname: prev && prev.uid === u.uid ? prev.nickname : "" }));
       setStreaks(loadStreaks(u.uid));
+      setRankData(null);
+      // ランクの読み込み（送れていなかった決着があれば先に再送）
+      flushUnsentRank(u.uid)
+        .then((r) => { if (currentUid === u.uid && r) setRankData(r); })
+        .catch(() => {
+          loadRank(u.uid)
+            .then((r) => { if (currentUid === u.uid) setRankData(r); })
+            .catch(() => {});
+        });
       try {
         const snap = await getDocFromServer(doc(db, "players", u.uid));
         const data = snap.exists() ? snap.data() : {};
@@ -527,7 +546,48 @@ export default function Home() {
   // タイトルに戻ったら最新の記録を表示
   useEffect(() => {
     if (screen === "menu") setStreaks(loadStreaks());
+    if ((screen === "menu" || screen === "deck") && currentUid) {
+      const uid = currentUid;
+      loadRank(uid)
+        .then((r) => { if (currentUid === uid) setRankData(r); })
+        .catch(() => {});
+    }
   }, [screen]);
+
+  // CPUランク戦の決着：ポイントを確定してリザルトに表示
+  useEffect(() => {
+    const st = cpuState;
+    if (screen !== "cpu" || !st || st.phase !== "end" || !st.winner) return;
+    if (!st.ranked || !st.gameId) return;
+    const gid = st.gameId;
+    const win = st.winner === YOU_ID;
+    if (!user || user.uid !== st.rankUid) {
+      setRankView({ gameId: gid, win, result: null, error: "ログイン中のアカウントが違うため、ポイントを反映できませんでした" });
+      return;
+    }
+    if (settlingRef.current === gid) return;
+    settlingRef.current = gid;
+    setRankView({ gameId: gid, win, result: null, error: null });
+    finishRankedMatch(user.uid, gid, win)
+      .then(({ data, result }) => {
+        if (data) setRankData(data);
+        setRankView({
+          gameId: gid,
+          win,
+          result,
+          error: result ? null : "この試合のポイントはすでに反映済みか、ランク戦の対象外です",
+        });
+      })
+      .catch(() => {
+        settlingRef.current = null;
+        setRankView({
+          gameId: gid,
+          win,
+          result: null,
+          error: "通信に失敗しました。結果は次にログインしたときに反映されます",
+        });
+      });
+  }, [screen, cpuState, user]);
 
   function openAuth(mode) {
     setAuthMode(mode);
@@ -790,6 +850,7 @@ export default function Home() {
     setRoom("");
     setCpuState(null);
     setCpuDeck(null);
+    setRankView(null);
     setDetail(null);
     setMsg("");
     setMatchMode(null);
@@ -837,6 +898,13 @@ export default function Home() {
     // リタイアは負けとして連勝記録をリセット
     if (screen === "cpu" && cpuState && cpuState.phase === "play" && !cpuState.winner) {
       recordStreak("cpu", gameKey(cpuState, null), false);
+      // ランク戦：開始時に負け分は引いてあるので、負けとして確定するだけ
+      if (cpuState.ranked && cpuState.gameId && user && user.uid === cpuState.rankUid) {
+        const uid = user.uid;
+        finishRankedMatch(uid, cpuState.gameId, false)
+          .then(({ data }) => { if (data && currentUid === uid) setRankData(data); })
+          .catch(() => {});
+      }
     }
     if (screen === "game" && room && state && state.phase === "play" && !state.winner) {
       recordStreak("room", gameKey(state, room), false);
@@ -1016,6 +1084,8 @@ export default function Home() {
   function rematchCpu() {
     setCpuState(null);
     setCpuDeck(null);
+    setRankView(null);
+    setRankMsg("");
     setDetail(null);
     setMsg("");
     setMatchMode("cpu");
@@ -1064,10 +1134,29 @@ export default function Home() {
   }
 
   /* ---- CPU戦開始 ---- */
-  function startCpu() {
-    if (!deckComplete) return;
+  async function startCpu() {
+    if (!deckComplete || rankBusy) return;
+    if (!user) {
+      setRankMsg("CPU戦（ランク戦）はログインが必要です。タイトル画面からログインしてください");
+      return;
+    }
+    const gameId = `cpu:${E.uid()}:${Date.now()}`;
+    setRankBusy(true);
+    setRankMsg("");
+    try {
+      // 対戦開始時に、負け分のポイントを先に引いて保存しておく
+      const r = await beginRankedMatch(user.uid, gameId);
+      setRankData(r);
+    } catch (e) {
+      setRankMsg(`通信に失敗したため対戦を開始できませんでした（${e?.code || e?.message || "不明なエラー"}）`);
+      setRankBusy(false);
+      return;
+    }
+    setRankBusy(false);
     const base = DECKS.length ? pickDeck() : pickCpuDeck();
     const d = { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
+    setRankView(null);
+    settlingRef.current = null;
     setCpuDeck(d);
     setCpuState({
       ...E.createLocalGame({
@@ -1078,7 +1167,9 @@ export default function Home() {
         first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
         log: [`CPUのデッキ: ${d.name}（Tier${d.tier}）`],
       }),
-      gameId: `cpu:${E.uid()}:${Date.now()}`, // 連勝記録用の試合ID
+      gameId, // 連勝記録・ランク戦用の試合ID
+      ranked: true,
+      rankUid: user.uid,
     });
     setDetail(null);
     setMatchMode("cpu");
@@ -1104,11 +1195,26 @@ export default function Home() {
 
         <div className="w-full max-w-xs flex flex-col gap-3">
           <button
-            onClick={() => { setMsg(""); setMatchMode("cpu"); setScreen("deck"); }}
-            className="sme-btn sme-btn-earth sme-glow text-lg"
+            onClick={() => {
+              setMsg("");
+              if (!user) {
+                setRankMsg("CPU戦（ランク戦）はログインが必要です。下の「ログイン」または「新規登録」からどうぞ");
+                return;
+              }
+              setRankMsg("");
+              setMatchMode("cpu");
+              setScreen("deck");
+            }}
+            className={`sme-btn sme-btn-earth text-lg ${user ? "sme-glow" : "opacity-60"}`}
           >
-            CPU対戦
+            CPU対戦（ランク戦）
           </button>
+          {user ? (
+            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} />
+          ) : (
+            <div className="text-[11px] text-slate-400">CPU戦（ランク戦）はログインが必要です</div>
+          )}
+          {rankMsg && !user && <div className="text-[11px] text-rose-300">{rankMsg}</div>}
           <button
             onClick={() => { setMsg(""); setScreen("roomMenu"); }}
             className="sme-btn sme-btn-sun sme-glow text-lg"
@@ -1350,8 +1456,13 @@ export default function Home() {
           )}
         </div>
         <p className="text-xs text-slate-400 mb-4">
-          {isRoom ? "ルームマッチ" : "CPU対戦"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）
+          {isRoom ? "ルームマッチ" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）
         </p>
+        {!isRoom && user && (
+          <div className="mb-4">
+            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} compact />
+          </div>
+        )}
         {locked && (
           <div className="sme-panel p-2 mb-4 text-[11px] text-amber-200 text-center">
             準備完了中はデッキを変更できません（変更するときは「準備を取り消す」）
@@ -1546,13 +1657,21 @@ export default function Home() {
                 )}
               </>
             ) : (
-              <button
-                disabled={!deckComplete}
-                onClick={startCpu}
-                className={`sme-btn sme-btn-earth ${deckComplete ? "sme-glow" : ""}`}
-              >
-                準備完了（対戦開始）
-              </button>
+              <>
+                {rankMsg && <div className="text-rose-300 text-xs mb-2">{rankMsg}</div>}
+                {!user && (
+                  <div className="text-amber-200 text-xs mb-2">
+                    CPU戦（ランク戦）はログインが必要です。タイトル画面からログインしてください
+                  </div>
+                )}
+                <button
+                  disabled={!deckComplete || rankBusy || !user}
+                  onClick={startCpu}
+                  className={`sme-btn sme-btn-earth ${deckComplete && user ? "sme-glow" : ""}`}
+                >
+                  {rankBusy ? "ポイントを確認中…" : "準備完了（対戦開始）"}
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1574,6 +1693,7 @@ export default function Home() {
         onRematch={rematchCpu}
         onTitle={() => leaveGame("menu")}
         onRetire={retire}
+        rankView={rankView}
       />
     );
   }
@@ -1609,7 +1729,7 @@ export default function Home() {
 }
 
 /* ============ CPU戦（CPUの手番を自動で進める） ============ */
-function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTitle, onRetire }) {
+function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTitle, onRetire, rankView }) {
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
@@ -1637,6 +1757,7 @@ function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTit
       onTitle={onTitle}
       onRetire={onRetire}
       onReplayingChange={setReplaying}
+      rankView={rankView}
     />
   );
 }
@@ -1726,7 +1847,7 @@ function RetireConfirm({ isCpu, onYes, onNo }) {
 /* ============ ゲーム画面（オンライン・CPU共通） ============ */
 function GameScreen({
   state, myId, room, apply, detail, setDetail, cpuDeck,
-  onRematch, rematchNote, onTitle, onRetire, onReplayingChange, onRefresh,
+  onRematch, rematchNote, onTitle, onRetire, onReplayingChange, onRefresh, rankView,
 }) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
@@ -1913,10 +2034,20 @@ function GameScreen({
     const win = state.winner === myId;
     return (
       <main className="min-h-screen p-8 text-center max-w-lg mx-auto flex flex-col justify-center">
-        <h1 className={`result-title ${win ? "win" : "lose"} my-6`}>
-          {win ? "VICTORY" : "DEFEAT"}
-        </h1>
-        <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
+        {isCpu && state.ranked ? (
+          <RankResult
+            win={win}
+            result={rankView && rankView.gameId === state.gameId ? rankView.result : null}
+            error={rankView && rankView.gameId === state.gameId ? rankView.error : null}
+          />
+        ) : (
+          <>
+            <h1 className={`result-title ${win ? "win" : "lose"} my-6`}>
+              {win ? "VICTORY" : "DEFEAT"}
+            </h1>
+            <div className="sme-heading text-lg mb-6">{win ? "勝利！" : "敗北..."}</div>
+          </>
+        )}
         {win && streak && streak.cur > 0 && (
           <div className="sme-panel mb-6 p-3">
             <div className="text-xs text-slate-400 mb-1">{isCpu ? "CPU戦" : "ルームマッチ"}</div>
