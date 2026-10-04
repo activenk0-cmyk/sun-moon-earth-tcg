@@ -36,16 +36,32 @@ export default function RankBadge({ points, streak = 0, compact = false, mini = 
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="rb-card w-full text-left px-2.5 py-1.5"
-          style={{ borderColor: r.color }}
+          className="rb-card rb-card-mini w-full text-left px-3 py-2"
+          style={{
+            borderColor: r.color,
+            background: `linear-gradient(135deg, ${r.color}26 0%, rgba(15,23,42,0.85) 55%)`,
+            boxShadow: `0 0 14px ${r.color}33`,
+          }}
         >
-          <div className="flex items-center gap-2 text-xs">
-            <span className="font-bold" style={{ color: r.color }}>{r.icon} {r.name}</span>
-            <span className="font-bold tabular-nums text-slate-100">{fmt(points)} pt</span>
-            <span className="flex-1 rb-bar">
-              <span className="rb-bar-fill block" style={{ width: `${Math.round(prog * 100)}%`, background: r.color }} />
-            </span>
-            {streak > 0 && <span className="text-amber-300 tabular-nums">🔥{streak}</span>}
+          <div className="flex items-center gap-2.5">
+            <div className="rb-icon rb-icon-mini" style={{ color: r.color, borderColor: r.color }}>
+              {r.icon}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-bold text-sm" style={{ color: r.color }}>{r.name}</span>
+                <span className="font-bold text-sm tabular-nums text-slate-100">
+                  {fmt(points)}<span className="text-[10px] text-slate-400 ml-0.5">pt</span>
+                </span>
+              </div>
+              <div className="rb-bar rb-bar-mini mt-1">
+                <div className="rb-bar-fill" style={{ width: `${Math.round(prog * 100)}%`, background: r.color }} />
+              </div>
+              <div className="flex justify-between text-[10px] text-slate-400 mt-0.5">
+                <span>{streak > 0 ? `🔥 ${streak}連勝中` : "ランク表 ›"}</span>
+                <span className="tabular-nums">{next ? `${next.name}まであと ${fmt(remain)}` : "最高ランク"}</span>
+              </div>
+            </div>
           </div>
         </button>
         {open && <RankTableModal points={points} onClose={() => setOpen(false)} />}
@@ -190,6 +206,13 @@ const BADGE_CSS = `
   background: rgba(2,6,23,0.6);
   box-shadow: 0 0 12px currentColor inset;
 }
+.rb-icon-mini {
+  width: 34px;
+  height: 34px;
+  font-size: 1.05rem;
+  border-width: 1.5px;
+}
+.rb-bar.rb-bar-mini { height: 4px; }
 .rb-bar {
   height: 6px;
   border-radius: 9999px;
