@@ -1210,6 +1210,9 @@ export default function Home() {
           >
             CPU対戦
           </button>
+          {user && (
+            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+          )}
           <button
             onClick={() => { setMsg(""); setScreen("roomMenu"); }}
             className="sme-btn sme-btn-sun sme-glow text-lg"
