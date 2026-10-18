@@ -424,6 +424,9 @@ body > * { position: relative; z-index: 1; }
 .unit-kw.inv { background: #b08a10; }
 .unit-kw.evd { background: #7b3fc4; }
 .unit-kw.rsh { background: #a3223f; }
+.unit-kw.spd { background: #d9741a; }
+.unit-kw.nod { background: #5b6472; }
+.unit-kw.tmp { background: #c2408a; }
 
 .unit.is-foe { border-color: rgba(var(--fx-rgb), 0.55); }
 .unit.is-attacked { opacity: 0.5; filter: grayscale(55%); }
