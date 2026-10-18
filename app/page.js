@@ -2263,15 +2263,15 @@ function GameScreen({
               onClick={() => { attack(sel, null, true); setSel(null); }}
               className="sme-btn sme-btn-danger sme-btn-sm sme-glow"
             >
-              ⚔ {oppLabel}プレイヤーを攻撃
+              ⚔ {oppLabel}プレイヤーにダイレクト
             </button>
           ) : (
             <div className="sme-panel py-1.5 text-center text-[11px] text-slate-400">
                  {ao.defender
                    ? "ディフェンダーがいるため、ディフェンダーしか攻撃できません"
                    : E.hasKw(me.field.find((x) => x.uid === sel), "no_attack_player")
-                   ? "このキャラは相手プレイヤーを攻撃できません"
-                   : "このキャラは出たターン、相手プレイヤーを攻撃できません"}
+                   ? "このキャラはダイレクト不可です"
+                   : "このキャラは出たターン、ダイレクトできません（ファストファイト）"}
             </div>
           )}
         </div>
@@ -2779,8 +2779,11 @@ function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onI
           <div className="flex flex-col gap-0.5 items-end">
             {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
             {u.keywords?.includes("invincible") && <span className="unit-kw inv">無</span>}
-            {u.keywords?.includes("untargetable_by_attack") && <span className="unit-kw evd">避</span>}
-            {u.noFaceAttack && <span className="unit-kw rsh">突</span>}
+            {u.keywords?.includes("untargetable_by_attack") && <span className="unit-kw evd">隠</span>}
+            {u.keywords?.includes("speed") && <span className="unit-kw spd">速</span>}
+            {u.noFaceAttack && <span className="unit-kw rsh">闘</span>}
+            {u.keywords?.includes("no_attack_player") && <span className="unit-kw nod">直✕</span>}
+            {u.keywords?.includes("dies_end_of_turn") && <span className="unit-kw tmp">限</span>}
           </div>
         </div>
       </button>
