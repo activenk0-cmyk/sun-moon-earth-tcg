@@ -8,7 +8,7 @@ import {
 import {
   onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
 } from "firebase/auth";
-import { SLOTS, FACTION_LABEL, cardsBySlot } from "../lib/cards";
+import { SLOTS, FACTION_LABEL, cardsBySlot, getCard, typeLabel, abilityShort } from "../lib/cards";
 import * as E from "../lib/engine";
 import { CPU_DECKS, pickCpuDeck, cpuStep } from "../lib/cpu";
 import { DECKS, pickDeck } from "../lib/decks";
@@ -43,7 +43,110 @@ const MODE_MSG = {
   goblin: "スタッツ-1する相手キャラを選んでください",
   reduce1: "コストを-1する手札を選んでください",
   reattack: "再攻撃させる攻撃済みの自軍キャラを選んでください",
+  damage6: "6ダメージを与える相手キャラを選んでください",
+  ownUnit: "手札に戻す自分のキャラ（元のコスト4以下）を選んでください",
+  ownHand: "場に出す手札のキャラ（元のコスト5以下）を選んでください",
 };
+
+// 対象が「自分の場」のモード / 「自分の手札」のモード
+const OWN_UNIT_MODES = ["reattack", "ownUnit"];
+const OWN_HAND_MODES = ["reduce1", "ownHand"];
+const isOwnMode = (m) => OWN_UNIT_MODES.includes(m) || OWN_HAND_MODES.includes(m);
+
+/* ============ 追加の見た目（水星の陣営カラー・アビリティ枠） ============ */
+const EXTRA_CSS = `
+.fx-mercury { --fx: #4fd8f0; --fx-deep: #136c80; --fx-rgb: 79, 216, 240; }
+.ability-row { display: flex; gap: 4px; margin-top: 3px; }
+.ability-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 50%;
+  font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 6px;
+  background: rgba(var(--fx-rgb), 0.16); border: 1px solid rgba(var(--fx-rgb), 0.6); color: #e6fbff;
+}
+.ability-chip .ab-kind {
+  font-weight: 800; padding: 1px 4px; border-radius: 4px; background: var(--fx-deep); color: #fff; flex-shrink: 0;
+}
+.ability-chip .ab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ability-empty {
+  font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 6px;
+  border: 1px dashed rgba(255,255,255,0.18); color: rgba(255,255,255,0.3);
+}
+`;
+if (typeof document !== "undefined" && !document.getElementById("sme-extra-css")) {
+  const el = document.createElement("style");
+  el.id = "sme-extra-css";
+  el.textContent = EXTRA_CSS;
+  document.head.appendChild(el);
+}
+
+// カードの「今の状況」の表示（例：このターン使ったカードの枚数・ダイレクトの回数・タイマーの残り）
+// p: そのカードの持ち主 / opts.unit: 場のユニット / opts.ability: 付いているアビリティ
+function cardStatus(c, p, opts = {}) {
+  if (!c || !p) return [];
+  const id = opts.unit ? E.effectId(opts.unit) : c.id || c.copyOf;
+  const out = [];
+  const played = p.playedThisTurn || 0;
+  if (id === "mercury_mercurino") {
+    if (opts.unit) {
+      if (opts.unit.tempBuff) out.push(`ターン終了まで +${opts.unit.tempBuff}（終了時に元に戻る）`);
+    } else {
+      out.push(`このターン使ったカード：${played}枚（今召喚するとスタッツ+${played}）`);
+    }
+  }
+  if (id === "mercury_chimera" && !opts.unit && opts.cost != null) {
+    out.push(`現在のコスト：${opts.cost}（元のコスト${c.cost}）`);
+  }
+  if (id === "mercury_hornet" && opts.unit) {
+    const n = opts.unit.directCount || 0;
+    out.push(`ダイレクトした回数：${n}回${n < 2 ? `（あと${2 - n}回で効果発動）` : "（効果は発動済み）"}`);
+  }
+  if (id === "earth_abyss" && opts.unit) {
+    out.push(opts.unit.firstAttackUsed ? "アタックトリガー：使用済み" : "アタックトリガー：未使用");
+  }
+  if (opts.ability && c.abilityKind === "timer") {
+    out.push(`タイマーの残り：${opts.ability.timer}（自分のターン開始時に1減り、0で破壊）`);
+  }
+  if (c.id === "mercury_gate") out.push(`今の山札：${p.deck.length}枚`);
+  if (c.id === "mercury_sonic") out.push(`即時召喚の追加コスト：${E.hasteExtraOf(p)}`);
+  return out;
+}
+
+function StatusLines({ lines }) {
+  if (!lines || !lines.length) return null;
+  return (
+    <div className="mb-3 flex flex-col gap-1">
+      {lines.map((t, i) => (
+        <div key={i} className="text-[12px] font-bold px-2 py-1 rounded bg-cyan-900/50 border border-cyan-400/40 text-cyan-100">
+          現在：{t}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// リーダーに付いているアビリティ（2枠）
+function AbilityRow({ player, onTap }) {
+  const list = E.abilitiesOf(player);
+  return (
+    <div className="ability-row">
+      {list.map((a) => {
+        const c = getCard(a.cardId);
+        return (
+          <button
+            key={a.uid}
+            onClick={() => onTap(a)}
+            className={`ability-chip ${fxClass(c?.faction)}`}
+          >
+            <span className="ab-kind">{abilityShort(c, a.timer)}</span>
+            <span className="ab-name">{(c?.name || "").replace(/^水星の/, "")}</span>
+          </button>
+        );
+      })}
+      {Array.from({ length: Math.max(0, E.MAX_ABILITIES - list.length) }).map((_, i) => (
+        <span key={`ae-${i}`} className="ability-empty">アビリティ空き</span>
+      ))}
+    </div>
+  );
+}
 
 // 再生パネルに出さない細かいログ
 const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン終了)$/;
@@ -51,9 +154,13 @@ const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン
 /* ============ ユーティリティ ============ */
 const roomId = () =>
   Array.from({ length: 4 }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join("");
-const fxClass = (f) => (f === "sun" || f === "moon" || f === "earth" || f === "pluto" ? `fx-${f}` : "fx-none");
+const fxClass = (f) =>
+  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "mercury" ? `fx-${f}` : "fx-none";
 const tierColor = (t) =>
-  t === 1 ? "bg-amber-500 text-slate-900" : t === 2 ? "bg-sky-600 text-white" : "bg-slate-600 text-white";
+  t === 1 ? "bg-amber-500 text-slate-900"
+    : t === 2 ? "bg-sky-600 text-white"
+    : t === 3 ? "bg-slate-600 text-white"
+    : "bg-slate-800 text-slate-300 border border-slate-500";
 const isComplete = (sel) => !!sel && SLOTS.every((s) => sel[s]);
 
 // ブラウザに保存したデータを読む
@@ -196,15 +303,10 @@ function gameKey(state, room) {
 }
 
 // CPUの戦い方を、lib/cpu.js に存在するものから選ぶ
+// （デッキの戦い方の名前をそのまま使う。知らない名前は lib/cpu.js 側で標準の戦い方になる）
 function resolveStyle(wants) {
   const list = Array.isArray(wants) ? wants : [wants];
-  const styles = CPU_DECKS.map((d) => d.style).filter(Boolean);
-  if (!styles.length) return list[0];
-  for (const w of list) {
-    const hit = styles.find((s) => s === w) || styles.find((s) => String(s).includes(w));
-    if (hit) return hit;
-  }
-  return styles[0];
+  return list.find(Boolean) || "balanced";
 }
 
 /* ---- ルームのデータ ---- */
@@ -1575,7 +1677,8 @@ export default function Home() {
               <span className="cost-gem"><span>{slot.replace(/[ab]/, "")}</span></span>
               <span className="sme-label">
                 COST {slot}
-                {(slot === "2b" || slot === "3b" || slot === "6") && " ・ MAGIC"}
+                {cardsBySlot(slot).some((c) => c.type === "magic") && " ・ MAGIC"}
+                {cardsBySlot(slot).some((c) => c.type === "ability") && " ・ ABILITY"}
               </span>
             </div>
             <div className="grid grid-cols-3 gap-2">
@@ -1592,6 +1695,9 @@ export default function Home() {
                     </div>
                     <div className="text-[11px] font-bold leading-tight">{c.name}</div>
                     {c.stat && <div className="text-[10px] text-slate-400 mt-1">STAT {c.stat}</div>}
+                    {c.type === "ability" && (
+                      <div className="text-[10px] text-cyan-300 mt-1">ABILITY {abilityShort(c)}</div>
+                    )}
                     <div
                       onClick={(e) => { e.stopPropagation(); setDetail(c); }}
                       className="text-[10px] text-sky-300 mt-1 underline"
@@ -1773,7 +1879,7 @@ function DetailModal({ card, onClose }) {
         className={`sme-modal ${fxClass(c.faction)} rounded-2xl p-5 max-w-sm w-full`}
       >
         <div className="text-xs mb-1 fx-text font-bold">
-          {FACTION_LABEL[c.faction]} / コスト {c.cost} / {c.type === "magic" ? "マジック" : "キャラクター"}
+          {FACTION_LABEL[c.faction]} / コスト {c.cost} / {typeLabel(c)}
         </div>
         <div className="sme-heading text-xl mb-2">{c.name}</div>
         {c.stat && (
@@ -2176,7 +2282,7 @@ function GameScreen({
   /* ---- 攻撃可能判定 ---- */
   const ao = sel && canMain ? E.attackOptions(state, myId, sel) : null;
   const oppTargetable = (u) => {
-    if (mode && mode !== "reduce1" && mode !== "reattack") return candidates.includes(u.uid);
+    if (mode && !isOwnMode(mode)) return candidates.includes(u.uid);
     if (!mode && ao) return ao.units.includes(u.uid);
     return false;
   };
@@ -2212,6 +2318,7 @@ function GameScreen({
                   生贄 {opp.sacrifice.length}
                 </button>
               </div>
+              <AbilityRow player={opp} onTap={(a) => setDetail({ ability: a, mine: false })} />
             </div>
           </div>
         </div>
@@ -2239,7 +2346,7 @@ function GameScreen({
               onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
-                  if (mode !== "reduce1" && mode !== "reattack") resolveTarget(u.uid);
+                  if (!isOwnMode(mode)) resolveTarget(u.uid);
                   return;
                 }
                 if (ao && ao.units.includes(u.uid)) {
@@ -2298,13 +2405,13 @@ function GameScreen({
             <UnitCard
               key={u.uid} u={u} selected={sel === u.uid}
               flash={flashIds.includes(u.uid)}
-              targetable={mode === "reattack" && candidates.includes(u.uid)}
+              targetable={OWN_UNIT_MODES.includes(mode) && candidates.includes(u.uid)}
               ready={canMain && u.canAttack && !u.attacked}
               sick={!u.attacked && !u.canAttack}
               onInfo={() => setDetail({ unit: u })}
               onTap={() => {
                 if (mode) {
-                  if (mode === "reattack") resolveTarget(u.uid);
+                  if (OWN_UNIT_MODES.includes(mode)) resolveTarget(u.uid);
                   return;
                 }
                 if (canMain && u.canAttack && !u.attacked) {
@@ -2337,6 +2444,7 @@ function GameScreen({
                 生贄 {me.sacrifice.length}
               </button>
             </div>
+            <AbilityRow player={me} onTap={(a) => setDetail({ ability: a, mine: true })} />
           </div>
         </div>
       </div>
@@ -2359,7 +2467,7 @@ function GameScreen({
             const cost = E.playCost(h);
             const can = !mode && E.canPlay(state, myId, i, false);
             const canHaste = !mode && E.canPlay(state, myId, i, true);
-            const isCand = mode === "reduce1" && candidates.includes(h.uid);
+            const isCand = OWN_HAND_MODES.includes(mode) && candidates.includes(h.uid);
             const bright = isCand || can || canSac;
             const look = isCand ? "is-target" : bright ? "is-playable" : "is-dim";
             return (
@@ -2367,7 +2475,7 @@ function GameScreen({
                 key={h.uid}
                 onClick={() => {
                   if (mode) {
-                    if (mode === "reduce1") resolveTarget(h.uid);
+                    if (OWN_HAND_MODES.includes(mode)) resolveTarget(h.uid);
                     return;
                   }
                   setDetail({ card: c, handIdx: i, cost, can, canHaste });
@@ -2387,6 +2495,10 @@ function GameScreen({
                   {c.type === "magic" ? (
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-900/80 border border-sky-400/40 text-sky-100">
                       MAGIC
+                    </span>
+                  ) : c.type === "ability" ? (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-900/80 border border-cyan-400/40 text-cyan-100">
+                      ABILITY {abilityShort(c)}
                     </span>
                   ) : (
                     c.stat && <span className="unit-stat">{c.stat}</span>
@@ -2561,7 +2673,7 @@ function GameScreen({
                         {c?.isToken && <span className="text-slate-400 text-xs font-normal">（トークン）</span>}
                       </span>
                       <span className="text-slate-400 text-xs">
-                        {c ? `${c.type === "magic" ? "マジック" : "キャラ"} / コスト${c.cost}` : ""}
+                        {c ? `${c.type === "magic" ? "マジック" : c.type === "ability" ? "アビリティ" : "キャラ"} / コスト${c.cost}` : ""}
                       </span>
                     </div>
                   );
@@ -2581,6 +2693,12 @@ function GameScreen({
           detail={detail}
           phase={phase}
           isMyTurn={isMyTurn}
+          me={me}
+          opp={opp}
+          onRemove={(abilityUid) => {
+            setDetail(null);
+            run(E.removeAbility(state, myId, abilityUid));
+          }}
           onClose={() => setDetail(null)}
           onPlay={(haste) => {
             const idx = detail.handIdx;
@@ -2612,13 +2730,14 @@ function GameScreen({
 function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
   const lines = item.lines;
   const main =
-    lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を生贄/.test(t)) || lines[0];
+    lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を付けた|を外した|を生贄/.test(t)) || lines[0];
   const sub = lines.filter((t) => t !== main);
 
   let kind = "行動", color = "bg-slate-600";
   if (/を攻撃|プレイヤーに\d+ダメージ/.test(main)) { kind = "攻撃"; color = "bg-red-600"; }
   else if (/を召喚/.test(main)) { kind = "召喚"; color = "bg-amber-500 text-slate-900"; }
   else if (/を使用/.test(main)) { kind = "マジック"; color = "bg-sky-600"; }
+  else if (/を付けた|を外した/.test(main)) { kind = "アビリティ"; color = "bg-cyan-600"; }
   else if (/を生贄/.test(main)) { kind = "生贄"; color = "bg-indigo-600"; }
 
   const duration = replayMs(item);
@@ -2792,10 +2911,22 @@ function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onI
 }
 
 /* ============ アクションモーダル ============ */
-function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }) {
+function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac, onRemove, canSac }) {
   const u = detail.unit;
-  const c = detail.card || (u ? E.unitInfo(u) : null);
+  const ab = detail.ability;
+  const c = ab ? getCard(ab.cardId) : detail.card || (u ? E.unitInfo(u) : null);
   const isHand = detail.handIdx !== undefined;
+  // そのカードの持ち主
+  const owner = ab
+    ? (detail.mine ? me : opp)
+    : u
+      ? (opp && opp.field.some((x) => x.uid === u.uid) ? opp : me)
+      : me;
+  const status = c ? cardStatus(c, owner, { unit: u, ability: ab, cost: isHand ? detail.cost : null }) : [];
+  const haste = me ? E.hasteExtraOf(me) : E.HASTE_EXTRA;
+  const isAbilityCard = c && c.type === "ability";
+  const abilityFull = isAbilityCard && isHand && me && E.abilitiesOf(me).length >= E.MAX_ABILITIES;
+  const abilitySame = isAbilityCard && isHand && me && E.hasAbility(me, c.id);
 
   return (
     <div onClick={onClose} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
@@ -2807,7 +2938,8 @@ function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }
           <>
             <div className="text-xs mb-1 fx-text font-bold">
               {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} /{" "}
-              {c.isToken ? "トークン" : c.type === "magic" ? "マジック" : "キャラクター"}
+              {c.isToken ? "トークン" : typeLabel(c)}
+              {ab && "（付いている）"}
             </div>
             <div className="sme-heading text-xl mb-2">{c.name}</div>
             {c.stat && (
@@ -2816,7 +2948,8 @@ function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }
                 {u && u.stat !== c.stat && <span className="text-xs text-slate-400">(元 {c.stat})</span>}
               </div>
             )}
-            <p className="text-sm leading-relaxed text-slate-200 mb-4">{c.text}</p>
+            <p className="text-sm leading-relaxed text-slate-200 mb-3">{c.text}</p>
+            <StatusLines lines={status} />
           </>
         ) : (
           <>
@@ -2829,13 +2962,32 @@ function ActionModal({ detail, phase, isMyTurn, onClose, onPlay, onSac, canSac }
         {isHand && isMyTurn && phase === "main" && (
           <div className="flex flex-col gap-2">
             <button disabled={!detail.can} onClick={() => onPlay(false)} className="sme-btn sme-btn-sun">
-              使用（コスト {detail.cost}）
+              {isAbilityCard ? "付ける" : "使用"}（コスト {detail.cost}）
             </button>
+            {abilityFull && (
+              <div className="text-[11px] text-amber-200 text-center">
+                アビリティは2枚まで。付いているアビリティをタップして外すと付けられます
+              </div>
+            )}
+            {!abilityFull && abilitySame && (
+              <div className="text-[11px] text-amber-200 text-center">同じ名前のアビリティは同時に1枚までです</div>
+            )}
             {detail.canHaste && (
               <button onClick={() => onPlay(true)} className="sme-btn sme-btn-danger">
-                即時召喚（コスト {detail.cost + E.HASTE_EXTRA}）
+                即時召喚（コスト {detail.cost + haste}）
               </button>
             )}
+          </div>
+        )}
+
+        {ab && detail.mine && isMyTurn && phase === "main" && (
+          <div className="flex flex-col gap-1">
+            <button onClick={() => onRemove(ab.uid)} className="sme-btn sme-btn-danger">
+              外す（コスト不要）
+            </button>
+            <div className="text-[11px] text-slate-400 text-center">
+              外したアビリティは墓地へ送られます（破壊トリガーは発動しません）
+            </div>
           </div>
         )}
 
