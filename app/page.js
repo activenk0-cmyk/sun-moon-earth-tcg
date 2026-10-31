@@ -89,7 +89,7 @@ function cardStatus(c, p, opts = {}) {
     if (opts.unit) {
       if (opts.unit.tempBuff) out.push(`ターン終了まで +${opts.unit.tempBuff}（終了時に元に戻る）`);
     } else {
-      out.push(`このターン使ったカード：${played}枚（今召喚するとスタッツ+${played}）`);
+         out.push(`このターン使ったカード：${played}枚（今召喚するとスタッツ+${played * E.MERCURINO_PER_CARD}）`);
     }
   }
   if (id === "mercury_chimera" && !opts.unit && opts.cost != null) {
