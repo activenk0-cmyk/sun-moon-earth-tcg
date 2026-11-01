@@ -2625,7 +2625,7 @@ function GameScreen({
                   value={reportNote}
                   onChange={(e) => setReportNote(e.target.value)}
                   rows={3}
-                  placeholder="例：カムラのHP+ログは出たのにアルベールが残っている"
+                  placeholder="例：カミラのHP+ログは出たのにアステールが残っている"
                   className="w-full text-sm text-slate-900 rounded p-2"
                 />
                 <div className="flex gap-2 mt-2">
