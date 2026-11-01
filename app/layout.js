@@ -2,8 +2,8 @@ import "./globals.css";
 import "./compact.css";
 
 export const metadata = {
-  title: "SUN / MOON / EARTH",
-  description: "3陣営カードゲーム",
+  title: "Planetverse",
+  description: "惑星たちが覇権を争うカードゲーム",
 };
 
 export const viewport = {
