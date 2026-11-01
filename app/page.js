@@ -1294,9 +1294,9 @@ export default function Home() {
           <div className="sme-emblem moon">☾</div>
           <div className="sme-emblem earth">◈</div>
         </div>
-        <h1 className="sme-title text-3xl sm:text-4xl">SUN · MOON · EARTH</h1>
+        <h1 className="sme-title text-3xl sm:text-4xl">PLANETVERSE</h1>
         <div className="sme-title-line" />
-        <p className="sme-sub text-[11px] mt-4 mb-12">THREE FACTIONS CARD BATTLE</p>
+        <p className="sme-sub text-[11px] mt-4 mb-12">PLANETARY CARD BATTLE</p>
 
         <div className="w-full max-w-xs flex flex-col gap-3">
           <button
