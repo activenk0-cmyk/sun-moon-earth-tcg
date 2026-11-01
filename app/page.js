@@ -17,6 +17,7 @@ import TutorialButton from "./TutorialButton";
 import RankBadge from "./RankBadge";
 import RankResult from "./RankResult";
 import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
+import { recordMatchStats } from "../lib/statsStore";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -1984,6 +1985,9 @@ function GameScreen({
   const endKey = state && state.phase === "end" ? gameKey(state, isCpu ? null : room) : null;
   useEffect(() => {
     if (!endKey || !state || !state.winner) return;
+        // マイページ用の記録（ランク戦・ルームマッチとも記録する）
+    const mySel = state.players && state.players[myId] ? state.players[myId].selection : null;
+    recordMatchStats(currentUid, endKey, isCpu ? "cpu" : "room", mySel, state.winner === myId);
     if (isCpu && state.ranked) return; // ランク戦の連勝はランクのデータで管理する
     setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
