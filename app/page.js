@@ -364,7 +364,8 @@ function gameDoc(base, sels) {
   };
   E.dealInitialHand(players[h]);
   E.dealInitialHand(players[g]);
-  return {
+  const first = Math.random() < 0.5 ? h : g; // 先攻をランダムに決定
+  const s = {
     host: h,
     guest: g,
     phase: "play",
@@ -373,17 +374,18 @@ function gameDoc(base, sels) {
     lobbyIn: {},
     gameNo: (base.gameNo || 0) + 1,
     closed: false,
-    turn: Math.random() < 0.5 ? h : g, // 先攻をランダムに決定
+    turn: first,
     turnPhase: "main", // 先攻1ターン目はドローなし
     turnCount: 1,
     skipNext: null,
     winner: null,
     logSeq: 0,
-    log: ["対戦開始！ 先攻はランダムで決定（先攻は初ターンドローなし）"],
+    log: [E.START_LOG],
     players,
   };
+  E.giveSecondBonus(s, first === h ? g : h); // 後攻ボーナス（ゲーム開始時から付く）
+  return s;
 }
-
 // 前回のログと今回のログを比べて、新しく増えた分だけを返す（古いルーム用）
 function newEntries(prev, cur) {
   const ps = prev.map((x) => JSON.stringify(x));
