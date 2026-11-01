@@ -18,6 +18,7 @@ import RankBadge from "./RankBadge";
 import RankResult from "./RankResult";
 import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
 import { recordMatchStats } from "../lib/statsStore";
+import MyPageButton from "./MyPageButton";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -1324,6 +1325,15 @@ export default function Home() {
           >
             ルームマッチ
           </button>
+                        {user && (
+            <MyPageButton
+              uid={user.uid}
+              nickname={user.nickname}
+              playerId={user.id}
+              rankData={rankData}
+              streaks={streaks}
+            />
+          )}
         </div>
 
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
