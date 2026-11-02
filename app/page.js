@@ -1973,7 +1973,8 @@ function GameScreen({
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
   const [pendingAttack, setPendingAttack] = useState(null); // 月のゴブリンの追加対象待ち
   const [banner, setBanner] = useState(null);
-  const [zone, setZone] = useState(null); // 生贄置き場の表示（"me" / "opp"）
+  const [zone, setZone] = useState(null); // 置き場の表示（"me" / "opp" = 生贄置き場、"meGrave" / "oppGrave" = 墓地）
+  const [graveSort, setGraveSort] = useState("new"); // 墓地の並び順（"new" = 新しい順 / "cost" = コストの大きい順）
   const [queue, setQueue] = useState([]); // 相手の行動の再生待ち
   const [showLog, setShowLog] = useState(false);
   const [confirmRetire, setConfirmRetire] = useState(false);
@@ -2308,7 +2309,17 @@ function GameScreen({
     ? current.changes.filter((c) => c.kind === "unit" || c.kind === "new").map((c) => c.uid)
     : [];
 
-  const zoneList = zone === "me" ? me.sacrifice : zone === "opp" ? opp.sacrifice : [];
+  // 置き場の一覧（生贄置き場 or 墓地）
+  const isGraveZone = zone === "meGrave" || zone === "oppGrave";
+  const zoneOwnerIsMe = zone === "me" || zone === "meGrave";
+  const zoneTitle = `${zoneOwnerIsMe ? "自分" : oppLabel}の${isGraveZone ? "墓地" : "生贄置き場"}`;
+  const zoneList = (() => {
+    if (!zone) return [];
+    if (!isGraveZone) return (zoneOwnerIsMe ? me : opp).sacrifice || [];
+    const list = E.graveCardsOf(zoneOwnerIsMe ? me : opp); // 古い順
+    if (graveSort === "cost") return [...list].sort((a, b) => (b.info?.cost ?? -1) - (a.info?.cost ?? -1));
+    return [...list].reverse();
+  })();
   const canSac = E.canSacrifice(state, myId);
 
   return (
@@ -2332,6 +2343,10 @@ function GameScreen({
                 手札 {opp.hand.length} ・ 山 {opp.deck.length} ・{" "}
                 <button onClick={() => setZone("opp")} className="underline text-sky-300">
                   生贄 {opp.sacrifice.length}
+                </button>{" "}
+                ・{" "}
+                <button onClick={() => setZone("oppGrave")} className="underline text-sky-300">
+                  墓地 {(opp.grave || []).length}
                 </button>
               </div>
               <AbilityRow player={opp} onTap={(a) => setDetail({ ability: a, mine: false })} />
@@ -2458,6 +2473,10 @@ function GameScreen({
               山 {me.deck.length} ・{" "}
               <button onClick={() => setZone("me")} className="underline text-sky-300">
                 生贄 {me.sacrifice.length}
+              </button>{" "}
+              ・{" "}
+              <button onClick={() => setZone("meGrave")} className="underline text-sky-300">
+                墓地 {(me.grave || []).length}
               </button>
             </div>
             <AbilityRow player={me} onTap={(a) => setDetail({ ability: a, mine: true })} />
@@ -2669,21 +2688,68 @@ function GameScreen({
         </div>
       )}
 
-      {/* 生贄置き場の一覧 */}
+      {/* 生贄置き場・墓地の一覧 */}
       {zone && (
         <div onClick={() => setZone(null)} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
           <div onClick={(e) => e.stopPropagation()} className="sme-sheet rounded-t-2xl p-5 w-full max-w-lg">
-            <div className="sme-heading text-sm mb-3">
-              {zone === "me" ? "自分" : oppLabel}の生贄置き場（{zoneList.length}枚）
+            <div className="flex justify-between items-center mb-2">
+              <div className="sme-heading text-sm">
+                {zoneTitle}（{zoneList.length}枚）
+              </div>
+              {/* 自分⇔相手 の切り替え */}
+              <button
+                onClick={() =>
+                  setZone(isGraveZone ? (zoneOwnerIsMe ? "oppGrave" : "meGrave") : (zoneOwnerIsMe ? "opp" : "me"))
+                }
+                className="text-[11px] underline text-sky-300"
+              >
+                {zoneOwnerIsMe ? oppLabel : "自分"}の{isGraveZone ? "墓地" : "生贄置き場"}を見る
+              </button>
+            </div>
+            {/* 生贄置き場⇔墓地 の切り替え・墓地の並び順 */}
+            <div className="flex gap-1 mb-3 text-[11px]">
+              <button
+                onClick={() => setZone(zoneOwnerIsMe ? "me" : "opp")}
+                className={`px-2 py-0.5 rounded border ${!isGraveZone ? "bg-sky-600 border-sky-400 text-white" : "border-white/30 text-slate-300"}`}
+              >
+                生贄置き場
+              </button>
+              <button
+                onClick={() => setZone(zoneOwnerIsMe ? "meGrave" : "oppGrave")}
+                className={`px-2 py-0.5 rounded border ${isGraveZone ? "bg-sky-600 border-sky-400 text-white" : "border-white/30 text-slate-300"}`}
+              >
+                墓地
+              </button>
+              {isGraveZone && (
+                <>
+                  <span className="flex-1" />
+                  <button
+                    onClick={() => setGraveSort("new")}
+                    className={`px-2 py-0.5 rounded border ${graveSort === "new" ? "bg-slate-600 border-slate-400 text-white" : "border-white/30 text-slate-300"}`}
+                  >
+                    新しい順
+                  </button>
+                  <button
+                    onClick={() => setGraveSort("cost")}
+                    className={`px-2 py-0.5 rounded border ${graveSort === "cost" ? "bg-slate-600 border-slate-400 text-white" : "border-white/30 text-slate-300"}`}
+                  >
+                    コスト順
+                  </button>
+                </>
+              )}
             </div>
             <div className="max-h-72 overflow-y-auto">
               {zoneList.length === 0 ? (
                 <div className="text-xs text-slate-400">まだありません</div>
               ) : (
                 zoneList.map((s, i) => {
-                  const c = E.handInfo(s);
+                  const c = isGraveZone ? s.info : E.handInfo(s);
                   return (
-                    <div key={i} className={`flex justify-between py-2 border-b border-white/10 text-sm ${fxClass(c?.faction)}`}>
+                    <button
+                      key={s.uid || i}
+                      onClick={() => c && setDetail({ card: c })}
+                      className={`w-full text-left flex justify-between py-2 border-b border-white/10 text-sm ${fxClass(c?.faction)}`}
+                    >
                       <span className="fx-text font-bold">
                         {c ? c.name : s.name || "不明"}
                         {c?.isToken && <span className="text-slate-400 text-xs font-normal">（トークン）</span>}
@@ -2691,11 +2757,12 @@ function GameScreen({
                       <span className="text-slate-400 text-xs">
                         {c ? `${c.type === "magic" ? "マジック" : c.type === "ability" ? "アビリティ" : "キャラ"} / コスト${c.cost}` : ""}
                       </span>
-                    </div>
+                    </button>
                   );
                 })
               )}
             </div>
+            <div className="text-[10px] text-slate-500 mt-2">カードをタップすると効果を確認できます</div>
             <button onClick={() => setZone(null)} className="sme-btn sme-btn-ghost sme-btn-sm mt-3">
               閉じる
             </button>
