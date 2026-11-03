@@ -183,7 +183,10 @@ export default function StarPick({ uid, onStart, onTitle }) {
 
         <MiniDeck selection={run.selection} onInfo={setDetail} title="これまでに選んだカード" />
 
-        <div className="fixed bottom-0 left-0 right-0 z-20 p-4 sme-panel !rounded-none !border-x-0 !border-b-0">
+        <div
+          className="fixed bottom-0 left-0 right-0 z-20 p-4 sme-panel !rounded-none !border-x-0 !border-b-0"
+          style={{ backdropFilter: "none", WebkitBackdropFilter: "none" }}
+        >
           <div className="max-w-lg mx-auto">
             <button
               disabled={!chosen}
