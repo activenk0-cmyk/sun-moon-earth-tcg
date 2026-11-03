@@ -43,6 +43,8 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
   const s = stats;
   const cpu = (s && s.modes && s.modes.cpu) || { g: 0, w: 0 };
   const room = (s && s.modes && s.modes.room) || { g: 0, w: 0 };
+  const sp = (s && s.modes && s.modes.starpick) || { g: 0, w: 0 };
+  const spRec = (s && s.starpick) || { runs: 0, best: 0, clears: 0 };
   const totalSlots = s ? s.factions.reduce((sum, f) => sum + f.n, 0) : 0;
   const topFaction = s && s.factions.length > 0 ? s.factions[0] : null;
   const topCards = s ? s.cards.slice(0, 5) : [];
@@ -73,6 +75,7 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
         >
           <div
             className="sme-panel relative w-full max-w-md max-h-[85vh] overflow-y-auto p-4 text-left"
+            style={{ backdropFilter: "none", WebkitBackdropFilter: "none" }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
@@ -102,7 +105,18 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
                   <div className="mt-2 space-y-1 text-xs text-slate-300">
                     <Row left="CPU戦" right={`${cpu.g}戦 ${cpu.w}勝（勝率 ${pct(cpu.w, cpu.g)}%）`} />
                     <Row left="ルームマッチ" right={`${room.g}戦 ${room.w}勝（勝率 ${pct(room.w, room.g)}%）`} />
+                    <Row left="スターピック" right={`${sp.g}戦 ${sp.w}勝（勝率 ${pct(sp.w, sp.g)}%）`} />
                   </div>
+                </Section>
+
+                {/* ===== スターピック ===== */}
+                <Section title="スターピック">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <Stat label="最高連勝" value={`${spRec.best}連勝`} />
+                    <Stat label="完全制覇" value={`${spRec.clears}回`} />
+                    <Stat label="挑戦回数" value={`${spRec.runs}回`} />
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">挑戦回数は、敗退または完全制覇で終わった回数です。</p>
                 </Section>
 
                 {/* ===== 連勝記録 ===== */}
