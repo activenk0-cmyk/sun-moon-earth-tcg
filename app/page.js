@@ -21,9 +21,11 @@ import { recordMatchStats } from "../lib/statsStore";
 import MyPageButton from "./MyPageButton";
 import StarPick, { finishStarpickBattle, markStarpickBattle } from "./StarPickPage";
 import { opponentDeck, battleLabel } from "../lib/starpick";
+import {
+  PHASE_LABEL, fxClass, cardStatus, StatusLines, AbilityRow, PhaseBar, ManaBar, EmptySlots, UnitCard,
+} from "./GameParts";
 
 /* ============ 定数 ============ */
-const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
 const CPU_ID = "cpu";
 const YOU_ID = "you";
 const PRESETS = DECKS.length ? DECKS : CPU_DECKS;
@@ -82,84 +84,12 @@ if (typeof document !== "undefined" && !document.getElementById("sme-extra-css")
   document.head.appendChild(el);
 }
 
-// カードの「今の状況」の表示（例：このターン使ったカードの枚数・ダイレクトの回数・タイマーの残り）
-// p: そのカードの持ち主 / opts.unit: 場のユニット / opts.ability: 付いているアビリティ
-function cardStatus(c, p, opts = {}) {
-  if (!c || !p) return [];
-  const id = opts.unit ? E.effectId(opts.unit) : c.id || c.copyOf;
-  const out = [];
-  const played = p.playedThisTurn || 0;
-  if (id === "mercury_mercurino") {
-    if (opts.unit) {
-      if (opts.unit.tempBuff) out.push(`ターン終了まで +${opts.unit.tempBuff}（終了時に元に戻る）`);
-    } else {
-         out.push(`このターン使ったカード：${played}枚（今召喚するとスタッツ+${played * E.MERCURINO_PER_CARD}）`);
-    }
-  }
-  if (id === "mercury_chimera" && !opts.unit && opts.cost != null) {
-    out.push(`現在のコスト：${opts.cost}（元のコスト${c.cost}）`);
-  }
-  if (id === "mercury_hornet" && opts.unit) {
-    const n = opts.unit.directCount || 0;
-    out.push(`ダイレクトした回数：${n}回${n < 2 ? `（あと${2 - n}回で効果発動）` : "（効果は発動済み）"}`);
-  }
-  if (id === "earth_abyss" && opts.unit) {
-    out.push(opts.unit.firstAttackUsed ? "アタックトリガー：使用済み" : "アタックトリガー：未使用");
-  }
-  if (opts.ability && c.abilityKind === "timer") {
-    out.push(`タイマーの残り：${opts.ability.timer}（自分のターン開始時に1減り、0で破壊）`);
-  }
-  if (c.id === "mercury_gate") out.push(`今の山札：${p.deck.length}枚`);
-  if (c.id === "mercury_sonic") out.push(`即時召喚の追加コスト：${E.hasteExtraOf(p)}`);
-  return out;
-}
-
-function StatusLines({ lines }) {
-  if (!lines || !lines.length) return null;
-  return (
-    <div className="mb-3 flex flex-col gap-1">
-      {lines.map((t, i) => (
-        <div key={i} className="text-[12px] font-bold px-2 py-1 rounded bg-cyan-900/50 border border-cyan-400/40 text-cyan-100">
-          現在：{t}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// リーダーに付いているアビリティ（2枠）
-function AbilityRow({ player, onTap }) {
-  const list = E.abilitiesOf(player);
-  return (
-    <div className="ability-row">
-      {list.map((a) => {
-        const c = getCard(a.cardId);
-        return (
-          <button
-            key={a.uid}
-            onClick={() => onTap(a)}
-            className={`ability-chip ${fxClass(c?.faction)}`}
-          >
-            <span className="ab-kind">{abilityShort(c, a.timer)}</span>
-            <span className="ab-name">{(c?.name || "").replace(/^水星の/, "")}</span>
-          </button>
-        );
-      })}
-      {Array.from({ length: Math.max(0, E.MAX_ABILITIES - list.length) }).map((_, i) => (
-        <span key={`ae-${i}`} className="ability-empty">アビリティ空き</span>
-      ))}
-    </div>
-  );
-}
-
 // 再生パネルに出さない細かいログ
 const TRIVIAL_LOG = /^(カードを1枚引いた|生贄フェーズへ|ターン終了)$/;
 
 /* ============ ユーティリティ ============ */
 const roomId = () =>
   Array.from({ length: 4 }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join("");
-const fxClass = (f) =>
-  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "mercury" ? `fx-${f}` : "fx-none";
 const tierColor = (t) =>
   t === 1 ? "bg-amber-500 text-slate-900"
     : t === 2 ? "bg-sky-600 text-white"
@@ -1996,39 +1926,6 @@ function DetailModal({ card, onClose }) {
   );
 }
 
-/* ============ フェーズ表示 ============ */
-function PhaseBar({ phase, mine }) {
-  const steps = ["draw", "main", "sacrifice"];
-  return (
-    <div className="flex gap-1 mb-2">
-      {steps.map((s, i) => (
-        <div key={s} className={`phase-step ${phase === s ? `on ${mine ? "" : "theirs"}` : ""}`}>
-          {i + 1}. {PHASE_LABEL[s]}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* ============ マナクリスタル ============ */
-function ManaBar({ cost, max }) {
-  const n = Math.max(max, cost);
-  return (
-    <div className="mana-row">
-      {Array.from({ length: n }).map((_, i) => (
-        <div key={i} className={`mana-dot ${i < cost ? "on" : "used"}`} />
-      ))}
-    </div>
-  );
-}
-
-/* ============ 空き枠 ============ */
-function EmptySlots({ count }) {
-  return Array.from({ length: Math.max(0, count) }).map((_, i) => (
-    <div key={`empty-${i}`} className="unit-slot" />
-  ));
-}
-
 /* ============ リタイア確認 ============ */
 function RetireConfirm({ isCpu, onYes, onNo }) {
   return (
@@ -3019,67 +2916,6 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/* ============ ユニット表示 ============ */
-function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onInfo }) {
-  const info = E.unitInfo(u);
-  const base = info?.stat;
-  const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
-
-  let look = "";
-  if (selected) look = "is-selected";
-  else if (targetable) look = "is-target";
-  else if (flash) look = "is-flash";
-  else if (ready) look = "is-ready";
-
-  const cls = [
-    "unit",
-    fxClass(info?.faction),
-    foe ? "is-foe" : "",
-    look,
-    u.attacked ? "is-attacked" : "",
-    sick ? "opacity-60 grayscale" : "",
-  ].filter(Boolean).join(" ");
-
-  return (
-    <div className="unit-enter">
-      <button onClick={onTap} className={cls}>
-        {/* 召喚酔い中：頭上で★がクルクル回る */}
-        {sick && (
-          <span className="dizzy" aria-hidden="true" title="召喚酔い">
-            <span>★</span>
-            <span>★</span>
-            <span>★</span>
-          </span>
-        )}
-        {/* 能力確認ボタン（タップしても選択・攻撃はしない） */}
-        {onInfo && (
-          <span
-            role="button"
-            aria-label="能力を見る"
-            onClick={(e) => { e.stopPropagation(); onInfo(); }}
-            className="absolute -top-2 -right-2 z-10 w-5 h-5 rounded-full bg-sky-600 border border-white/70 text-[10px] font-bold text-white flex items-center justify-center shadow-lg"
-          >
-            i
-          </span>
-        )}
-        <div className="unit-name">{u.name}</div>
-        <div className="flex justify-between items-end mt-1">
-          <span className={`unit-stat ${statCls}`}>{u.stat}</span>
-          <div className="flex flex-col gap-0.5 items-end">
-            {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
-            {u.keywords?.includes("invincible") && <span className="unit-kw inv">無</span>}
-            {u.keywords?.includes("untargetable_by_attack") && <span className="unit-kw evd">隠</span>}
-            {u.keywords?.includes("speed") && <span className="unit-kw spd">速</span>}
-            {u.noFaceAttack && <span className="unit-kw rsh">闘</span>}
-            {u.keywords?.includes("no_attack_player") && <span className="unit-kw nod">直✕</span>}
-            {u.keywords?.includes("dies_end_of_turn") && <span className="unit-kw tmp">限</span>}
-          </div>
-        </div>
-      </button>
     </div>
   );
 }
