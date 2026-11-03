@@ -19,6 +19,8 @@ import RankResult from "./RankResult";
 import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
 import { recordMatchStats } from "../lib/statsStore";
 import MyPageButton from "./MyPageButton";
+import StarPick, { finishStarpickBattle, markStarpickBattle } from "./StarPickPage";
+import { opponentDeck, battleLabel } from "../lib/starpick";
 
 /* ============ 定数 ============ */
 const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
@@ -34,7 +36,7 @@ const MAX_MY_DECKS = 20; // 保存できるデッキの数
 // スマホのブラウザで、背景ぼかし（backdrop-filter）の上の数字が描き直されないことがあるため、
 // HP・コストを表示する帯ではぼかしを切る
 const NO_BLUR = { backdropFilter: "none", WebkitBackdropFilter: "none" };
-const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game"];
+const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game", "starpick"];
 
 const MODE_MSG = {
   damage3: "4ダメージを与える相手キャラを選んでください",
@@ -695,6 +697,13 @@ export default function Home() {
       });
   }, [screen, cpuState, user]);
 
+  // スターピックの決着：進行状況を進める（次の戦へ／終了／完全制覇）
+  useEffect(() => {
+    const st = cpuState;
+    if (screen !== "cpu" || !st || !st.starpick || st.phase !== "end" || !st.winner) return;
+    finishStarpickBattle(st.spUid, st.gameId, st.winner === YOU_ID);
+  }, [screen, cpuState]);
+
   function openAuth(mode) {
     setAuthMode(mode);
     setAuthId("");
@@ -1001,6 +1010,12 @@ export default function Home() {
 
   /* ---- リタイア ---- */
   async function retire() {
+    // スターピック：リタイアは負けとして終了
+    if (screen === "cpu" && cpuState && cpuState.starpick && cpuState.phase === "play" && !cpuState.winner) {
+      finishStarpickBattle(cpuState.spUid, cpuState.gameId, false);
+      leaveGame("starpick");
+      return;
+    }
     // リタイアは負けとして連勝記録をリセット
     if (screen === "cpu" && cpuState && cpuState.phase === "play" && !cpuState.winner) {
       // ランク戦以外（ランク導入前の試合）だけ、従来の連勝記録を更新
@@ -1199,6 +1214,44 @@ export default function Home() {
     setScreen("deck");
   }
 
+  /* ---- スターピック ---- */
+  function openStarpick() {
+    setMsg("");
+    if (!user) {
+      setRankMsg("スターピックはログインが必要です。下の「ログイン」または「新規登録」からどうぞ");
+      return;
+    }
+    setRankMsg("");
+    setMatchMode(null);
+    setScreen("starpick");
+  }
+
+  function startStarpick(run) {
+    if (!user || !run || !isComplete(run.selection)) return;
+    const d = opponentDeck(run.battle);
+    const gameId = `starpick:${user.uid}:${Date.now()}`;
+    markStarpickBattle(user.uid, gameId);
+    setRankView(null);
+    setCpuDeck(d);
+    setCpuState({
+      ...E.createLocalGame({
+        p1: YOU_ID,
+        p2: CPU_ID,
+        sel1: run.selection,
+        sel2: d.selection,
+        first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
+        log: [`スターピック ${battleLabel(run.battle)}`],
+      }),
+      gameId,
+      ranked: false,
+      starpick: run.battle,
+      spUid: user.uid,
+    });
+    setDetail(null);
+    setMatchMode("cpu");
+    setScreen("cpu");
+  }
+
   function subscribe(id) {
     if (unsubRef.current) unsubRef.current();
     unsubRef.current = onSnapshot(
@@ -1324,6 +1377,9 @@ export default function Home() {
             className="sme-btn sme-btn-sun sme-glow text-lg"
           >
             ルームマッチ
+          </button>
+          <button onClick={openStarpick} className="sme-btn sme-btn-moon sme-glow text-lg">
+            スターピック
           </button>
                         {user && (
             <MyPageButton
@@ -1801,6 +1857,21 @@ export default function Home() {
     );
   }
 
+  /* ============ 画面: スターピック ============ */
+  if (screen === "starpick") {
+    if (!user) {
+      return (
+        <main className="min-h-screen p-6 max-w-lg mx-auto text-center flex flex-col justify-center gap-4">
+          <div className="text-sm text-slate-300">ログイン情報を確認しています…（ログインしていない場合は、タイトル画面からログインしてください）</div>
+          <button onClick={() => setScreen("menu")} className="sme-btn sme-btn-ghost">
+            タイトルへ戻る
+          </button>
+        </main>
+      );
+    }
+    return <StarPick uid={user.uid} onStart={startStarpick} onTitle={() => setScreen("menu")} />;
+  }
+
   /* ============ 画面: CPU戦 ============ */
   if (screen === "cpu") {
     return (
@@ -1810,7 +1881,7 @@ export default function Home() {
         cpuDeck={cpuDeck}
         detail={detail}
         setDetail={setDetail}
-        onRematch={rematchCpu}
+        onRematch={cpuDeck && cpuDeck.starpick ? () => leaveGame("starpick") : rematchCpu}
         onTitle={() => leaveGame("menu")}
         onRetire={retire}
         rankView={rankView}
@@ -1998,6 +2069,7 @@ function GameScreen({
     if (!endKey || !state || !state.winner) return;
         // マイページ用の記録（ランク戦・ルームマッチとも記録する）
     const mySel = state.players && state.players[myId] ? state.players[myId].selection : null;
+    if (state.starpick) return; // スターピックの記録は StarPickPage.js でする（連勝記録も別）
     recordMatchStats(currentUid, endKey, isCpu ? "cpu" : "room", mySel, state.winner === myId);
     if (isCpu && state.ranked) return; // ランク戦の連勝はランクのデータで管理する
     setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
@@ -2186,10 +2258,13 @@ function GameScreen({
             </div>
           </div>
         )}
-        {isCpu && (
+        {isCpu && !cpuDeck.starpick && (
           <div className="text-sm text-slate-300 mb-4">
             CPUのデッキ: {cpuDeck.name}（Tier{cpuDeck.tier}）
           </div>
+        )}
+        {isCpu && cpuDeck.starpick && (
+          <div className="text-sm text-slate-300 mb-4">スターピック {cpuDeck.name}</div>
         )}
         <div className="sme-panel text-xs mb-6 text-left p-3 space-y-0.5">
           {(state.log || []).slice(-8).map(renderLog)}
@@ -2200,7 +2275,7 @@ function GameScreen({
         <div className="flex flex-col gap-2">
           {onRematch && (
             <button onClick={onRematch} className="sme-btn sme-btn-sun sme-glow">
-              再戦する
+              {isCpu && cpuDeck.starpick ? "次へ" : "再戦する"}
             </button>
           )}
           {onTitle && (
@@ -2332,7 +2407,7 @@ function GameScreen({
             <div className="flex-1 min-w-0">
               <div className="flex justify-between items-center">
                 <span className="text-xs font-bold text-rose-200 truncate">
-                  {isCpu ? `CPU（${cpuDeck.name}・T${cpuDeck.tier}）` : "相手"}
+                  {isCpu ? (cpuDeck.starpick ? `CPU（${cpuDeck.name}）` : `CPU（${cpuDeck.name}・T${cpuDeck.tier}）`) : "相手"}
                 </span>
                 <span className="text-[11px] font-bold text-indigo-200 shrink-0 ml-2">
                   コスト {opp.cost}/{opp.maxCost}
