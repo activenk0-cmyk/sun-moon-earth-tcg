@@ -227,6 +227,11 @@ function mergeStreaks(local, remote) {
   return out;
 }
 
+// ランクデータが「まだ一度もランク戦をしていない状態」かどうか
+function isEmptyRank(r) {
+  return !!r && (r.points || 0) <= 1500 && !r.streak && !r.best && !r.last && !r.pending;
+}
+
 // 1試合の結果を記録する（同じ試合を2回数えないよう、試合ごとのキーで判定）
 // mode: "cpu" / "room"、key: 試合を見分ける文字列、win: 勝ったかどうか
 function recordStreak(mode, key, win) {
@@ -652,14 +657,25 @@ export default function Home() {
   }, []);
 
   // タイトルに戻ったら最新の記録を表示
+  const prevScreenRef = useRef(null);
   useEffect(() => {
+    const prev = prevScreenRef.current;
+    prevScreenRef.current = screen;
     if (screen === "menu") setStreaks(loadStreaks());
     if ((screen === "menu" || screen === "deck") && currentUid) {
+      // スターピックから戻った時はランクが変わらないので、読み直さない
+      // （試合記録の保存と重なって、一瞬レギュラー表示になるのを防ぐ）
+      if (prev === "starpick" && rankData) return;
       const uid = currentUid;
       loadRank(uid)
-        .then((r) => { if (currentUid === uid) setRankData(r); })
+        .then((r) => {
+          if (currentUid !== uid) return;
+          // すでにランクを持っているのに「空のランク」が返ってきたら無視する
+          setRankData((cur) => (cur && isEmptyRank(r) && !isEmptyRank(cur) ? cur : r));
+        })
         .catch(() => {});
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
 
   // CPUランク戦の決着：ポイントを確定してリザルトに表示
