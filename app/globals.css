@@ -735,3 +735,22 @@ body > * { position: relative; z-index: 1; }
   .dizzy span:nth-child(1) { transform: translate(-12px, 0); }
   .dizzy span:nth-child(3) { transform: translate(12px, 0); }
 }
+
+/* ============================================================
+   スマホ向けの対策
+   ============================================================ */
+/* ---- iPhone・iPad（Safari など iOS のブラウザ）だけに効く ---- */
+@supports (-webkit-touch-callout: none) {
+  /* 背景ぼかしの上で文字や数字が変わると、描き直されずに古い表示が残ることがあるため、
+     パネルのぼかしを切る（パネルはもともと濃い色なので、見た目はほぼ変わらない） */
+  html .sme-panel { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  /* 16px より小さい入力欄をタップすると画面が自動で拡大されたままになるため、入力欄だけ 16px にする */
+  html input.text-sm, html textarea.text-sm { font-size: 16px; }
+}
+
+/* ---- タッチ操作の端末（スマホ・タブレット）だけに効く ---- */
+/* タップしたあと、ボタンや手札が浮き上がった表示のまま残らないようにする（押している間の表示はそのまま） */
+@media (hover: none) {
+  .sme-btn:hover:not(:disabled):not(:active) { filter: none; transform: none; }
+  .hand-card.is-playable:hover { transform: none; }
+}
