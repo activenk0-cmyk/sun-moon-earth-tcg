@@ -143,7 +143,7 @@ export function GameScreen({
 }) {
   const [sel, setSel] = useState(null); // 選択中の自軍ユニット
   const [pendingPlay, setPendingPlay] = useState(null); // 対象選択待ちのカード使用
-  const [pendingAttack, setPendingAttack] = useState(null); // 月のゴブリンの追加対象待ち
+  const [pendingAttack, setPendingAttack] = useState(null); // 月のスケルトンの追加対象待ち
   const [banner, setBanner] = useState(null);
   const [zone, setZone] = useState(null); // 置き場の表示（"me" / "opp" = 生贄置き場、"meGrave" / "oppGrave" = 墓地）
   const [graveSort, setGraveSort] = useState("new"); // 墓地の並び順（"new" = 新しい順 / "cost" = コストの大きい順）
@@ -834,7 +834,7 @@ export function GameScreen({
                   value={reportNote}
                   onChange={(e) => setReportNote(e.target.value)}
                   rows={3}
-                  placeholder="例：カミラのHP+ログは出たのにアステールが残っている"
+                  placeholder="例：カミラのHP+ログは出たのにアスカールが残っている"
                   className="w-full text-sm text-slate-900 rounded p-2"
                 />
                 <div className="flex gap-2 mt-2">
