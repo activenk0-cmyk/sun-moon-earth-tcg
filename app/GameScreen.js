@@ -989,14 +989,14 @@ export function GameScreen({
 function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
   const lines = item.lines;
   const main =
-    lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を付けた|を外した|を生贄/.test(t)) || lines[0];
+    lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を装着した|を付けた|を外した|を生贄/.test(t)) || lines[0];
   const sub = lines.filter((t) => t !== main);
 
   let kind = "行動", color = "bg-slate-600";
   if (/を攻撃|プレイヤーに\d+ダメージ/.test(main)) { kind = "攻撃"; color = "bg-red-600"; }
   else if (/を召喚/.test(main)) { kind = "召喚"; color = "bg-amber-500 text-slate-900"; }
   else if (/を使用/.test(main)) { kind = "マジック"; color = "bg-sky-600"; }
-  else if (/を付けた|を外した/.test(main)) { kind = "アビリティ"; color = "bg-cyan-600"; }
+  else if (/を装着した|を付けた|を外した/.test(main)) { kind = "アビリティ"; color = "bg-cyan-600"; }
   else if (/を生贄/.test(main)) { kind = "生贄"; color = "bg-indigo-600"; }
 
   const duration = replayMs(item);
@@ -1137,7 +1137,7 @@ function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac,
             <div className="text-xs mb-1 fx-text font-bold">
               {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} /{" "}
               {c.isToken ? "トークン" : typeLabel(c)}
-              {ab && "（付いている）"}
+              {ab && "（装着中）"}
             </div>
             <div className="sme-heading text-xl mb-2">{c.name}</div>
             {c.stat && (
@@ -1160,11 +1160,11 @@ function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac,
         {isHand && isMyTurn && phase === "main" && (
           <div className="flex flex-col gap-2">
             <button disabled={!detail.can} onClick={() => onPlay(false)} className="sme-btn sme-btn-sun">
-              {isAbilityCard ? "付ける" : "使用"}（コスト {detail.cost}）
+              {isAbilityCard ? "装着" : "使用"}（コスト {detail.cost}）
             </button>
             {abilityFull && (
               <div className="text-[11px] text-amber-200 text-center">
-                アビリティは2枚まで。付いているアビリティをタップして外すと付けられます
+                アビリティは2枚まで。装着しているアビリティをタップして外すと装着できます
               </div>
             )}
             {!abilityFull && abilitySame && (
