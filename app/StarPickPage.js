@@ -16,7 +16,7 @@ import { recordMatchStats, recordStarpickRun } from "../lib/statsStore";
    ============================================================ */
 
 const fxClass = (f) =>
-  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "mercury" ? `fx-${f}` : "fx-none";
+  ["sun", "moon", "earth", "pluto", "mercury", "saturn"].includes(f) ? `fx-${f}` : "fx-none";
 
 const SP_CSS = `
 .sp-dot { width: 26px; height: 26px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center;
