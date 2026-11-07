@@ -46,11 +46,13 @@ const MODE_MSG = {
   damage6: "6ダメージを与える相手キャラを選んでください",
   ownUnit: "手札に戻す自分のキャラ（元のコスト4以下）を選んでください",
   ownHand: "場に出す手札のキャラ（元のコスト5以下）を選んでください",
+  vanish: "消滅させる相手のキャラ（屍30ならアビリティも可）を選んでください",
+  replica: "残してコピーする手札を1枚選んでください",
 };
 
 // 対象が「自分の場」のモード / 「自分の手札」のモード
 const OWN_UNIT_MODES = ["reattack", "ownUnit"];
-const OWN_HAND_MODES = ["reduce1", "ownHand"];
+const OWN_HAND_MODES = ["reduce1", "ownHand", "replica"];
 const isOwnMode = (m) => OWN_UNIT_MODES.includes(m) || OWN_HAND_MODES.includes(m);
 
 /* ============ CPU戦（CPUの手番を自動で進める） ============ */
@@ -522,10 +524,20 @@ export function GameScreen({
                 </button>{" "}
                 ・{" "}
                 <button onClick={() => setZone("oppGrave")} className="underline text-sky-300">
-                  墓地 {(opp.grave || []).length}
+                  墓地 {(opp.grave || []).length}（屍 {E.corpseOf(opp)}）
                 </button>
               </div>
-              <AbilityRow player={opp} onTap={(a) => setDetail({ ability: a, mine: false })} />
+              <AbilityRow
+                player={opp}
+                isTarget={(a) => mode === "vanish" && candidates.includes(a.uid)}
+                onTap={(a) => {
+                  if (mode === "vanish" && candidates.includes(a.uid)) {
+                    resolveTarget(a.uid);
+                    return;
+                  }
+                  setDetail({ ability: a, mine: false });
+                }}
+              />
             </div>
           </div>
         </div>
@@ -652,7 +664,7 @@ export function GameScreen({
               </button>{" "}
               ・{" "}
               <button onClick={() => setZone("meGrave")} className="underline text-sky-300">
-                墓地 {(me.grave || []).length}
+                墓地 {(me.grave || []).length}（屍 {E.corpseOf(me)}）
               </button>
             </div>
             <AbilityRow player={me} onTap={(a) => setDetail({ ability: a, mine: true })} />
@@ -669,7 +681,7 @@ export function GameScreen({
             if (!c) {
               return (
                 <div key={h.uid} className="hand-card fx-none is-dim shrink-0">
-                  <div className="text-[9px] text-slate-400">トークン</div>
+                  <div className="text-[9px] text-slate-400">カード</div>
                   <div className="text-[10px] font-bold leading-tight mt-1">{h.name}</div>
                   <div className="text-[9px] text-slate-500">使用不可</div>
                 </div>
@@ -695,7 +707,7 @@ export function GameScreen({
               >
                 <div className="flex justify-between items-start">
                   <span className="text-[9px] font-bold fx-text">
-                    {c.isToken ? "トークン" : FACTION_LABEL[c.faction]}
+                    {FACTION_LABEL[c.faction]}
                   </span>
                   <span className={`cost-gem ${cost < c.cost ? "is-down" : ""}`}>
                     <span>{cost}</span>
@@ -928,7 +940,6 @@ export function GameScreen({
                     >
                       <span className="fx-text font-bold">
                         {c ? c.name : s.name || "不明"}
-                        {c?.isToken && <span className="text-slate-400 text-xs font-normal">（トークン）</span>}
                       </span>
                       <span className="text-slate-400 text-xs">
                         {c ? `${c.type === "magic" ? "マジック" : c.type === "ability" ? "アビリティ" : "キャラ"} / コスト${c.cost}` : ""}
@@ -1136,7 +1147,7 @@ function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac,
           <>
             <div className="text-xs mb-1 fx-text font-bold">
               {FACTION_LABEL[c.faction]} / コスト {isHand ? detail.cost : c.cost} /{" "}
-              {c.isToken ? "トークン" : typeLabel(c)}
+              {typeLabel(c)}
               {ab && "（装着中）"}
             </div>
             <div className="sme-heading text-xl mb-2">{c.name}</div>
@@ -1151,7 +1162,7 @@ function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac,
           </>
         ) : (
           <>
-            <div className="text-xs mb-1 text-slate-400">トークン</div>
+            <div className="text-xs mb-1 text-slate-400">キャラクター</div>
             <div className="sme-heading text-xl mb-2">{u?.name}</div>
             <div className="mb-4"><span className="unit-stat">{u?.stat}</span></div>
           </>
