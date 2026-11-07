@@ -44,6 +44,7 @@ const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game", "starpick"];
 /* ============ 追加の見た目（水星の陣営カラー・アビリティ枠） ============ */
 const EXTRA_CSS = `
 .fx-mercury { --fx: #4fd8f0; --fx-deep: #136c80; --fx-rgb: 79, 216, 240; }
+.fx-saturn { --fx: #d9a35b; --fx-deep: #7a5320; --fx-rgb: 217, 163, 91; }
 .ability-row { display: flex; gap: 4px; margin-top: 3px; }
 .ability-chip {
   display: inline-flex; align-items: center; gap: 4px; max-width: 50%;
