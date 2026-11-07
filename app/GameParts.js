@@ -13,8 +13,11 @@ import * as E from "../lib/engine";
 
 export const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
 
-export const fxClass = (f) =>
-  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "mercury" ? `fx-${f}` : "fx-none";
+const FX_FACTIONS = ["sun", "moon", "earth", "pluto", "mercury", "saturn"];
+export const fxClass = (f) => (FX_FACTIONS.includes(f) ? `fx-${f}` : "fx-none");
+
+// 屍を参照するカード（今の屍を表示する）
+const CORPSE_CARDS = ["saturn_princess", "saturn_fadeout", "saturn_eclipse", "saturn_hideo"];
 
 // カードの「今の状況」の表示（例：このターン使ったカードの枚数・ダイレクトの回数・タイマーの残り）
 // p: そのカードの持ち主 / opts.unit: 場のユニット / opts.ability: 付いているアビリティ
@@ -38,10 +41,24 @@ export function cardStatus(c, p, opts = {}) {
     out.push(`ダイレクトした回数：${n}回${n < 2 ? `（あと${2 - n}回で効果発動）` : "（効果は発動済み）"}`);
   }
   if (id === "earth_abyss" && opts.unit) {
-    out.push(opts.unit.firstAttackUsed ? "アタックトリガー：使用済み" : "アタックトリガー：未使用");
+    out.push(opts.unit.firstAttackUsed ? "攻撃トリガー：使用済み" : "攻撃トリガー：未使用");
   }
   if (opts.ability && c.abilityKind === "timer") {
     out.push(`タイマーの残り：${opts.ability.timer}（自分のターン開始時に1減り、0で破壊）`);
+  }
+  if (CORPSE_CARDS.includes(id) && !(opts.unit && id === "saturn_hideo")) {
+    out.push(`今の屍：${E.corpseOf(p)}`);
+  }
+  if (id === "saturn_princess" && opts.unit && opts.unit.noDeathTrigger) {
+    out.push("このコピーは破壊トリガーを持たない");
+  }
+  if (id === "saturn_hideo" && opts.unit) {
+    if (opts.unit.immuneDestroy) out.push("カードの効果で破壊されない");
+    if (opts.unit.immuneEffectDamage) out.push("交戦以外でダメージを受けない");
+    if (!opts.unit.immuneDestroy) out.push("耐性なし（召喚した時の屍が30未満）");
+  }
+  if (id === "saturn_replica" && !opts.unit) {
+    out.push(`このターン使ったカード：${played}枚（${E.REPLICA_NEED}枚以上でコスト-${E.REPLICA_OFF}）`);
   }
   if (c.id === "mercury_gate") out.push(`今の山札：${p.deck.length}枚`);
   if (c.id === "mercury_sonic") out.push(`即時召喚の追加コスト：${E.hasteExtraOf(p)}`);
@@ -62,7 +79,8 @@ export function StatusLines({ lines }) {
 }
 
 // リーダーに付いているアビリティ（2枠）
-export function AbilityRow({ player, onTap }) {
+// isTarget(a)：対象として選べるアビリティなら true（光らせる）
+export function AbilityRow({ player, onTap, isTarget }) {
   const list = E.abilitiesOf(player);
   return (
     <div className="ability-row">
@@ -72,10 +90,10 @@ export function AbilityRow({ player, onTap }) {
           <button
             key={a.uid}
             onClick={() => onTap(a)}
-            className={`ability-chip ${fxClass(c?.faction)}`}
+            className={`ability-chip ${fxClass(c?.faction)} ${isTarget && isTarget(a) ? "ring-2 ring-rose-400 animate-pulse" : ""}`}
           >
             <span className="ab-kind">{abilityShort(c, a.timer)}</span>
-            <span className="ab-name">{(c?.name || "").replace(/^水星の/, "")}</span>
+            <span className="ab-name">{(c?.name || "").replace(/^(太陽|月|地球|冥王星|水星|土星)の/, "")}</span>
           </button>
         );
       })}
