@@ -785,11 +785,31 @@ body > * { position: relative; z-index: 1; }
   80% { transform: translateX(4px); }
 }
 
-/* ---- 強化：緑に光る ---- */
+/* 効果を受けたキャラの動きは、召喚（大きく出てきて枠が光る）と見分けられるように、
+   「大きくならない・明るくならない」動きにしている */
+
+/* ---- 強化：下から緑の光が上がり、少し持ち上がる ---- */
 .unit.unit.fxa-buff { animation: fxBuff var(--fx-ms, 0.46s) ease-out both; }
 @keyframes fxBuff {
-  0%, 100% { box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
-  45% { box-shadow: 0 0 22px rgba(52, 211, 153, 1); transform: scale(1.06); filter: brightness(1.25); }
+  0% { transform: translateY(0); box-shadow: inset 0 -4px 0 rgba(52, 211, 153, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
+  45% { transform: translateY(-5px); box-shadow: inset 0 -26px 18px -8px rgba(52, 211, 153, 0.75), 0 3px 8px rgba(0, 0, 0, 0.6); border-color: #34d399; }
+  100% { transform: translateY(0); box-shadow: inset 0 -4px 0 rgba(52, 211, 153, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
+}
+
+/* ---- 弱体化：上から赤い影が下り、少し沈む（ダメージの「揺れ」とも区別） ---- */
+.unit.unit.fxa-debuff { animation: fxDebuff var(--fx-ms, 0.46s) ease-out both; }
+@keyframes fxDebuff {
+  0% { transform: translateY(0); box-shadow: inset 0 4px 0 rgba(244, 63, 94, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
+  45% { transform: translateY(4px); box-shadow: inset 0 26px 18px -8px rgba(244, 63, 94, 0.7), 0 3px 8px rgba(0, 0, 0, 0.6); border-color: #f43f5e; }
+  100% { transform: translateY(0); box-shadow: inset 0 4px 0 rgba(244, 63, 94, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
+}
+
+/* ---- キーワード付与・耐性：水色の盾のような枠が内側に1回走る（動かない） ---- */
+.unit.unit.fxa-shield { animation: fxShield var(--fx-ms, 0.44s) ease-out both; }
+@keyframes fxShield {
+  0% { box-shadow: inset 0 0 0 0 rgba(125, 211, 252, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
+  40% { box-shadow: inset 0 0 0 3px rgba(125, 211, 252, 0.95), inset 0 0 14px rgba(125, 211, 252, 0.6), 0 3px 8px rgba(0, 0, 0, 0.6); }
+  100% { box-shadow: inset 0 0 0 0 rgba(125, 211, 252, 0), 0 3px 8px rgba(0, 0, 0, 0.6); }
 }
 
 /* ---- 破壊：縮みながら消える／消滅：ぼやけて消える ---- */
@@ -827,10 +847,11 @@ body > * { position: relative; z-index: 1; }
   50% { box-shadow: 0 0 24px rgba(192, 132, 252, 1); border-color: #c084fc; filter: brightness(1.3) hue-rotate(20deg); }
 }
 
-/* ---- トリガー・キーワード付与・耐性：金色に光る ---- */
-.unit.unit.fxa-glow { animation: fxGlow var(--fx-ms, 0.5s) ease-in-out both; }
+/* ---- 効果を出す側（トリガー発動）：金色の枠がチカッと2回点滅（動かない） ---- */
+.unit.unit.fxa-glow { animation: fxGlow var(--fx-ms, 0.5s) linear both; }
 @keyframes fxGlow {
-  50% { box-shadow: 0 0 22px rgba(253, 224, 71, 0.95); border-color: #fde047; }
+  0%, 50%, 100% { border-color: rgba(var(--fx-rgb), 0.7); box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
+  25%, 75% { border-color: #fde047; box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.9), 0 3px 8px rgba(0, 0, 0, 0.6); }
 }
 
 /* ---- アビリティの装着枠 ---- */
