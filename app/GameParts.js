@@ -94,7 +94,8 @@ export function AbilityRow({ player, onTap, isTarget, markOf }) {
             onClick={() => onTap(a)}
             className={`ability-chip ${fxClass(c?.faction)} ${isTarget && isTarget(a) ? "ring-2 ring-rose-400 animate-pulse" : ""} ${(markOf && markOf(a)) || ""}`}
           >
-            <span className="ab-kind">{abilityShort(c, a.timer)}</span>
+            {/* 数字が変わったら作り直す（どの端末でも、変わった瞬間に確実に描き直されるように） */}
+            <span key={`t-${a.timer ?? ""}`} className="ab-kind">{abilityShort(c, a.timer)}</span>
             <span className="ab-name">{(c?.name || "").replace(/^(太陽|月|地球|冥王星|水星|土星)の/, "")}</span>
           </button>
         );
@@ -188,7 +189,8 @@ export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, fxC
         )}
         <div className="unit-name">{u.name}</div>
         <div className="flex justify-between items-end mt-1">
-          <span className={`unit-stat ${statCls}`}>{u.stat}</span>
+          {/* 数字が変わったら作り直す（どの端末でも、変わった瞬間に確実に描き直されるように） */}
+          <span key={`s-${u.stat}`} className={`unit-stat ${statCls}`}>{u.stat}</span>
           <div className="flex flex-col gap-0.5 items-end">
             {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
             {u.keywords?.includes("invincible") && <span className="unit-kw inv">無</span>}
