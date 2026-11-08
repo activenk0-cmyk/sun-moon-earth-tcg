@@ -19,11 +19,19 @@ import { fxClass } from "./GameParts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 // 画面の描き直しを待つ（場に出たキャラの位置を測るため）
+// 描き直しの合図（requestAnimationFrame）は、省電力モードなどで遅れたり来なかったりすることがあるので、
+// 最大 FRAME_MAX ミリ秒で待つのをやめて先へ進む（どの端末でも演出が止まらないように）
+const FRAME_MAX = 80;
 const frame = () =>
   new Promise((r) => {
-    if (typeof requestAnimationFrame === "undefined") return r();
-    requestAnimationFrame(() => requestAnimationFrame(() => r()));
+    let done = false;
+    const fin = () => { if (!done) { done = true; r(); } };
+    setTimeout(fin, FRAME_MAX);
+    if (typeof requestAnimationFrame === "undefined") return fin();
+    requestAnimationFrame(() => requestAnimationFrame(fin));
   });
+// 1回の行動の演出の上限（万一これを超えたら、残りを飛ばして本当の盤面に切り替える）
+const ITEM_MAX = 8000;
 
 // data-fx の要素の画面上の位置
 function rectOf(key) {
@@ -115,9 +123,10 @@ export function useFxPlayer(state, myId, speed) {
     // 待つ（途中で終わらせる必要が出たら、すぐに戻る）
     const pause = async (ms) => {
       const end = Date.now() + ms;
-      while (!dead && !hurry() && Date.now() < end) await wait(Math.min(30, end - Date.now()));
+      while (!stop() && Date.now() < end) await wait(Math.min(30, end - Date.now()));
     };
-    const stop = () => dead || hurry();
+    const deadline = Date.now() + ITEM_MAX;
+    const stop = () => dead || hurry() || Date.now() > deadline;
     (async () => {
       const work = F.clonePlayers(current.prev);
       const show = () => setDisp(F.clonePlayers(work));
