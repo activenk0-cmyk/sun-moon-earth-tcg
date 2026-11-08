@@ -34,6 +34,17 @@ function rectOf(key) {
 
 const OVERLAY_LIFE = 1200; // ポップ・札などを残しておく時間
 
+// CSSに再生時間を渡す（--fx-ms：今の演出の長さ / --fx-mul：速さの倍率）
+// 待ち時間とアニメーションの長さを同じ値にして、どの端末でも途中で切れないようにする
+function setFxVars(ms, mul) {
+  if (typeof document === "undefined") return;
+  const st = document.documentElement.style;
+  if (ms != null) st.setProperty("--fx-ms", `${Math.max(1, ms)}ms`);
+  if (mul != null) st.setProperty("--fx-mul", String(mul));
+}
+// 画面が裏に回っているか（タブ切り替え・アプリ切り替え・画面ロック）
+const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
 /* ============ 再生 ============ */
 // state：今の状態 / myId：自分のID / speed："normal" | "fast" | "none"
 export function useFxPlayer(state, myId, speed) {
@@ -56,6 +67,7 @@ export function useFxPlayer(state, myId, speed) {
     prevRef.current = { log: curLog, players: state.players, seq: curSeq, gameNo: state.gameNo || 0, gameId: state.gameId || null };
     if (!prev || state.phase === "waiting" || state.phase === "lobby") return;
     if (speedRef.current === "none") return;
+    if (isHidden()) return; // 裏に回っている間の出来事は再生しない（戻ったときに古い演出が流れないように）
     if (prev.gameNo !== (state.gameNo || 0) || prev.gameId !== (state.gameId || null)) return; // 別の試合
     if (!prev.players || !Object.keys(prev.players).length) return;
     const oppId = E.otherId(state, myId);
@@ -84,6 +96,7 @@ export function useFxPlayer(state, myId, speed) {
     let dead = false;
     (async () => {
       const mul = Math.max(0.05, F.speedMul(speedRef.current) || 0.05);
+      setFxVars(null, mul);
       const work = F.clonePlayers(current.prev);
       const show = () => setDisp(F.clonePlayers(work));
       show();
@@ -113,6 +126,8 @@ export function useFxPlayer(state, myId, speed) {
             await wait(50 * mul);
           }
           // 盤面の演出
+          const ms = F.stepDuration(step, mul);
+          setFxVars(ms, mul);
           step.forEach((ev) => F.applyPre(work, ev, current.final));
           show();
           setMarks(F.marksOf(step, myId));
@@ -123,7 +138,7 @@ export function useFxPlayer(state, myId, speed) {
             .map((o) => ({ ...o, key: E.uid(), at: now, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null }))
             .filter((o) => o.rect);
           setOverlays((list) => [...list.filter((x) => now - x.at < OVERLAY_LIFE), ...fresh]);
-          await wait(F.stepDuration(step, mul));
+          await wait(ms);
           if (dead) return;
           step.forEach((ev) => F.applyPost(work, ev));
           show();
@@ -159,6 +174,25 @@ export function useFxPlayer(state, myId, speed) {
     if (speed === "none") setQueue([]);
   }, [speed]);
 
+  // 画面が裏に回ったら残りを飛ばす
+  // （裏に回るとブラウザがタイマーや描画を止めるため、戻ったときに古い演出が続きから流れてしまう。
+  //   止め方は端末ごとに違うので、どの端末でも「飛ばす」にそろえる）
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVis = () => {
+      if (isHidden()) {
+        setQueue([]);
+        setOverlays([]);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onVis);
+    };
+  }, []);
+
   const skipAll = useCallback(() => {
     setQueue([]);
     setOverlays([]);
@@ -174,7 +208,7 @@ export default function FxLayer({ fx, oppLabel }) {
     <>
       {/* 演出中：画面タップで残りを飛ばす */}
       {playing && (
-        <div onClick={skipAll} className="fixed inset-0 z-[44]" aria-label="演出をスキップ">
+        <div onClick={skipAll} className="fx-catcher fixed inset-0 z-[44]" aria-label="演出をスキップ">
           <div className="fx-skip-hint">タップでスキップ</div>
         </div>
       )}
