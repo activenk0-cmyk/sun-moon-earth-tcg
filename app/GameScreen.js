@@ -4,7 +4,8 @@
 // ・GameScreen（対戦画面本体：オンライン・CPU共通）
 // ・CpuGame（CPU戦：CPUの手番を自動で進める）
 // ・ActionModal（カードをタップしたときの操作画面）／DetailModal（カード詳細：デッキ構築でも使う）
-// ・ReplayOverlay（相手の行動の再生パネル）／RetireConfirm（リタイア確認）
+// ・ReplayOverlay（ログの行をタップしたときの「詳しく見る」）／RetireConfirm（リタイア確認）
+// ・対戦中の演出（帯・カットイン・盤面の動き）は ./FxLayer.js と ../lib/fx.js
 // ・墓地・生贄置き場の一覧は GameScreen の中にある
 // ・CPU_ID / YOU_ID（CPU戦でのプレイヤーの名前）は page.js でも使うので export している
 // ※ app/page.js から中身をそのまま移したもの
@@ -20,10 +21,9 @@ import { recordMatchStats } from "../lib/statsStore";
 import {
   PHASE_LABEL, fxClass, cardStatus, StatusLines, AbilityRow, PhaseBar, ManaBar, EmptySlots, UnitCard,
 } from "./GameParts";
-import {
-  TRIVIAL_LOG, currentUid, recordStreak, gameKey,
-  newEntries, stampLog, maxSeq, replayMs, lastOppActions, diffBoards,
-} from "../lib/online";
+import { currentUid, recordStreak, gameKey, stampLog } from "../lib/online";
+import FxLayer, { useFxPlayer } from "./FxLayer";
+import { FX_SPEEDS, loadFxSpeed, saveFxSpeed, logGroupAt, fxToChanges } from "../lib/fx";
 
 /* ============ 定数 ============ */
 export const CPU_ID = "cpu";
@@ -61,7 +61,7 @@ export function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch
 
   useEffect(() => {
     if (!state || state.phase !== "play" || state.turn !== CPU_ID) return;
-    if (replaying) return; // 行動の表示が終わるまで待つ
+    if (replaying) return; // 演出が終わるまで待つ
     // ドロー（ターン開始）は長めに待ってバナーを見せる
     const delay = E.phaseOf(state) === "draw" ? 1400 : 850;
     const t = setTimeout(() => {
@@ -149,13 +149,13 @@ export function GameScreen({
   const [banner, setBanner] = useState(null);
   const [zone, setZone] = useState(null); // 置き場の表示（"me" / "opp" = 生贄置き場、"meGrave" / "oppGrave" = 墓地）
   const [graveSort, setGraveSort] = useState("new"); // 墓地の並び順（"new" = 新しい順 / "cost" = コストの大きい順）
-  const [queue, setQueue] = useState([]); // 相手の行動の再生待ち
   const [showLog, setShowLog] = useState(false);
+  const [logDetail, setLogDetail] = useState(null); // ログの行をタップしたときの「詳しく見る」
+  const [fxSpeed, setFxSpeed] = useState("normal"); // 演出の速さ（ふつう／はやい／なし）
   const [confirmRetire, setConfirmRetire] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const lastTurnKey = useRef(null);
   const busy = useRef(false);
-  const prevRef = useRef(null);
   const logRef = useRef(null);
   const historyRef = useRef([]); // 不具合報告用：直前の状態の記録
   const [reportOpen, setReportOpen] = useState(false);
@@ -164,6 +164,20 @@ export function GameScreen({
   const [reportMsg, setReportMsg] = useState("");
 
   const isCpu = !!cpuDeck;
+
+  // 演出の速さ（端末に保存）
+  useEffect(() => {
+    setFxSpeed(loadFxSpeed());
+  }, []);
+  function cycleFxSpeed() {
+    const i = FX_SPEEDS.findIndex((x) => x.id === fxSpeed);
+    const next = FX_SPEEDS[(i + 1) % FX_SPEEDS.length].id;
+    setFxSpeed(next);
+    saveFxSpeed(next);
+  }
+  // 対戦中の演出（自分・相手の行動の両方）
+  const fxp = useFxPlayer(state, myId, fxSpeed);
+  const fxPlaying = fxp.playing;
 
   // 決着したら連勝記録を更新（CPU戦とルームマッチは別々）
   const [streak, setStreak] = useState(null);
@@ -234,50 +248,17 @@ export function GameScreen({
     setBanner({ key, mine, text: mine ? "あなたのターン" : `${oppLabel}のターン` });
   }, [state?.turnCount, state?.turn, state?.phase, myId, oppLabel]);
 
-  // バナーは相手の行動の再生がすべて終わってから表示
+  // バナーは演出がすべて終わってから表示
   useEffect(() => {
-    if (!banner || queue.length) return;
+    if (!banner || fxPlaying) return;
     const t = setTimeout(() => setBanner(null), 1600);
     return () => clearTimeout(t);
-  }, [banner, queue.length]);
+  }, [banner, fxPlaying]);
 
-  // 相手の新しい行動を検出して再生待ちに追加
+  // CPU戦：演出中はCPUを止める
   useEffect(() => {
-    if (!state || !state.players) return;
-    const prev = prevRef.current;
-    const curLog = state.log || [];
-    const curSeq = maxSeq(curLog);
-    prevRef.current = { log: curLog, players: state.players, seq: curSeq };
-    if (!prev || state.phase === "waiting" || state.phase === "lobby") return;
-    const oppId = E.otherId(state, myId);
-    if (!oppId) return;
-    // 通し番号があれば番号で、無ければ（古いルーム）従来の突き合わせで判定
-    const fresh =
-      curSeq > 0
-        ? curLog.filter((l) => l && typeof l === "object" && (l.n || 0) > prev.seq)
-        : newEntries(prev.log, curLog);
-    const lines = fresh
-      .filter((l) => typeof l !== "string" && l.by !== myId)
-      .map((l) => l.t)
-      .filter((t) => !TRIVIAL_LOG.test(t));
-    if (!lines.length) return;
-    const changes = diffBoards(prev.players, state.players, myId, oppId, lines);
-    setQueue((q) => [...q, { id: E.uid(), lines, changes }]);
-  }, [state, myId]);
-
-  const current = queue[0] || null;
-
-  // 再生中の行動を自動で次へ
-  useEffect(() => {
-    if (!current) return;
-    const t = setTimeout(() => setQueue((q) => q.slice(1)), replayMs(current));
-    return () => clearTimeout(t);
-  }, [current?.id]);
-
-  // CPU戦：再生中はCPUを止める
-  useEffect(() => {
-    if (onReplayingChange) onReplayingChange(queue.length > 0);
-  }, [queue.length, onReplayingChange]);
+    if (onReplayingChange) onReplayingChange(fxPlaying);
+  }, [fxPlaying, onReplayingChange]);
 
   // ログを常に最新までスクロール
   useEffect(() => {
@@ -315,12 +296,34 @@ export function GameScreen({
   const me = state.players ? state.players[myId] : null;
   const opp = state.players && oppId ? state.players[oppId] : null;
 
-  /* ---- ログ表示 ---- */
+  /* ---- ログ表示（行をタップすると「詳しく見る」） ---- */
+  const fullLog = state.log || [];
+  const openLogDetail = (absIdx) => {
+    const g = logGroupAt(fullLog, absIdx);
+    if (!g) return;
+    // キャラの名前（場・出来事の記録から探す）
+    const names = {};
+    fullLog.forEach((x) => {
+      if (x && Array.isArray(x.fx)) x.fx.forEach((ev) => { if (ev.u && ev.nm) names[ev.u] = ev.nm; });
+    });
+    Object.values(state.players || {}).forEach((pl) => (pl.field || []).forEach((u) => { names[u.uid] = u.name; }));
+    const changes = fxToChanges(g.events, myId, (uid) => names[uid]);
+    setLogDetail({ lines: g.lines, changes, mine: g.by === myId });
+  };
+  const logRows = (count) => {
+    const list = count ? fullLog.slice(-count) : fullLog;
+    const base = fullLog.length - list.length;
+    return list.map((l, i) => renderLog(l, base + i));
+  };
   const renderLog = (l, i) => {
     if (typeof l === "string") return <div key={i} className="text-slate-500">{l}</div>;
     const mine = l.by === myId;
     return (
-      <div key={i} className={mine ? "text-emerald-300" : "text-rose-300"}>
+      <div
+        key={i}
+        onClick={() => openLogDetail(i)}
+        className={`cursor-pointer active:bg-white/10 rounded ${mine ? "text-emerald-300" : "text-rose-300"}`}
+      >
         <span className={`inline-block text-[9px] px-1 mr-1 rounded ${mine ? "bg-emerald-900" : "bg-rose-900"}`}>
           {mine ? "自分" : oppLabel}
         </span>
@@ -330,7 +333,8 @@ export function GameScreen({
   };
 
   /* ============ 決着画面 ============ */
-  if (state.phase === "end") {
+  // 決着した場合も、最後の演出が終わってから決着画面にする
+  if (state.phase === "end" && !fxPlaying) {
     const win = state.winner === myId;
     return (
       <main
@@ -370,7 +374,7 @@ export function GameScreen({
           <div className="text-sm text-slate-300 mb-4">スターピック {cpuDeck.name}</div>
         )}
         <div className="sme-panel text-xs mb-6 text-left p-3 space-y-0.5">
-          {(state.log || []).slice(-8).map(renderLog)}
+          {logRows(8)}
         </div>
         {rematchNote && (
           <div className="sme-panel text-xs mb-4 p-3 text-amber-200">{rematchNote}</div>
@@ -407,7 +411,6 @@ export function GameScreen({
   const mode = pendingPlay ? pendingPlay.kind : pendingAttack ? "goblin" : null;
   const candidates = pendingPlay ? pendingPlay.candidates : pendingAttack ? pendingAttack.candidates : [];
   const canMain = E.isActive(state, myId, "main") && !mode;
-  const lastOpp = lastOppActions(state.log, myId);
 
   /* ---- 状態を進める（連打での二重実行を防ぐ） ---- */
   async function run(next) {
@@ -482,10 +485,10 @@ export function GameScreen({
     return false;
   };
 
-  // 再生中の行動で光らせるユニット
-  const flashIds = current
-    ? current.changes.filter((c) => c.kind === "unit" || c.kind === "new").map((c) => c.uid)
-    : [];
+  // 盤面の表示用（演出中は、演出に合わせて進めている盤面を表示する。操作の判定は本当の状態で行う）
+  const vMe = (fxp.disp && fxp.disp[myId]) || me;
+  const vOpp = (fxp.disp && oppId && fxp.disp[oppId]) || opp;
+  const markOf = (key) => fxp.marks[key] || "";
 
   // 置き場の一覧（生贄置き場 or 墓地）
   const isGraveZone = zone === "meGrave" || zone === "oppGrave";
@@ -503,32 +506,34 @@ export function GameScreen({
   return (
     <main className={`min-h-screen max-w-lg mx-auto text-sm ${mode ? "pb-20" : "pb-4"}`}>
       {/* 相手情報 + ターン表示 */}
-      <div className="sticky top-0 z-10">
+      <div className="sticky top-0 z-10" data-fx="header">
         <div className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2" style={NO_BLUR}>
           <div className="flex items-center gap-3">
-            <div key={`opp-hp-${opp.hp}`} className={`hp-orb opp ${opp.hp <= 3 ? "is-danger" : ""}`}>{opp.hp}</div>
+            <div key={`opp-hp-${vOpp.hp}`} data-fx="hp-opp" className={`hp-orb opp ${vOpp.hp <= 3 ? "is-danger" : ""}`}>{vOpp.hp}</div>
             <div className="flex-1 min-w-0">
               <div className="flex justify-between items-center">
                 <span className="text-xs font-bold text-rose-200 truncate">
                   {isCpu ? (cpuDeck.starpick ? `CPU（${cpuDeck.name}）` : `CPU（${cpuDeck.name}・T${cpuDeck.tier}）`) : "相手"}
                 </span>
-                <span className="text-[11px] font-bold text-indigo-200 shrink-0 ml-2">
-                  コスト {opp.cost}/{opp.maxCost}
+                <span data-fx="cost-opp" className="text-[11px] font-bold text-indigo-200 shrink-0 ml-2">
+                  コスト {vOpp.cost}/{vOpp.maxCost}
                 </span>
               </div>
-              <div className="mt-0.5"><ManaBar cost={opp.cost} max={opp.maxCost} /></div>
+              <div className="mt-0.5"><ManaBar cost={vOpp.cost} max={vOpp.maxCost} /></div>
               <div className="text-[11px] text-slate-300 mt-0.5">
-                手札 {opp.hand.length} ・ 山 {opp.deck.length} ・{" "}
-                <button onClick={() => setZone("opp")} className="underline text-sky-300">
-                  生贄 {opp.sacrifice.length}
+                <span data-fx="hand-opp">手札 {vOpp.hand.length}</span> ・{" "}
+                <span data-fx="deck-opp">山 {vOpp.deck.length}</span> ・{" "}
+                <button data-fx="sac-opp" onClick={() => setZone("opp")} className="underline text-sky-300">
+                  生贄 {vOpp.sacrifice.length}
                 </button>{" "}
                 ・{" "}
                 <button onClick={() => setZone("oppGrave")} className="underline text-sky-300">
-                  墓地 {(opp.grave || []).length}（屍 {E.corpseOf(opp)}）
+                  墓地 {(vOpp.grave || []).length}（屍 {E.corpseOf(vOpp)}）
                 </button>
               </div>
               <AbilityRow
-                player={opp}
+                player={vOpp}
+                markOf={(a) => markOf(`ab:${a.uid}`)}
                 isTarget={(a) => mode === "vanish" && candidates.includes(a.uid)}
                 onTap={(a) => {
                   if (mode === "vanish" && candidates.includes(a.uid)) {
@@ -556,10 +561,10 @@ export function GameScreen({
       <div className="px-2 py-1">
         <div className="sme-label mb-0.5">{oppLabel}の場（右上の i で能力確認）</div>
         <div className="flex gap-1 flex-wrap justify-center">
-          {opp.field.map((u) => (
+          {vOpp.field.map((u) => (
             <UnitCard
               key={u.uid} u={u} foe
-              flash={flashIds.includes(u.uid)}
+              fxCls={markOf(`u:${u.uid}`)}
               targetable={oppTargetable(u)}
               sick={!u.attacked && !u.canAttack}
               onInfo={() => setDetail({ unit: u })}
@@ -577,7 +582,7 @@ export function GameScreen({
               }}
             />
           ))}
-          <EmptySlots count={E.MAX_FIELD - opp.field.length} />
+          <EmptySlots count={E.MAX_FIELD - vOpp.field.length} />
         </div>
       </div>
 
@@ -606,8 +611,14 @@ export function GameScreen({
       {/* ログ */}
       <div className="relative sme-log">
         <div ref={logRef} className="px-3 py-1 text-[10px] h-16 overflow-y-auto space-y-0.5">
-          {(state.log || []).slice(-10).map(renderLog)}
+          {logRows(10)}
         </div>
+        <button
+          onClick={cycleFxSpeed}
+          className="absolute top-1 right-14 text-[10px] px-2 py-0.5 rounded bg-slate-900/80 border border-white/20 text-slate-200"
+        >
+          演出:{(FX_SPEEDS.find((x) => x.id === fxSpeed) || FX_SPEEDS[0]).label}
+        </button>
         <button
           onClick={() => setShowLog(true)}
           className="absolute top-1 right-2 text-[10px] px-2 py-0.5 rounded bg-indigo-900/80 border border-indigo-400/40 text-indigo-100"
@@ -620,10 +631,10 @@ export function GameScreen({
       <div className="px-2 pt-1 pb-6">
         <div className="sme-label mb-0.5">自分の場</div>
         <div className="flex gap-1 flex-wrap justify-center">
-          {me.field.map((u) => (
+          {vMe.field.map((u) => (
             <UnitCard
               key={u.uid} u={u} selected={sel === u.uid}
-              flash={flashIds.includes(u.uid)}
+              fxCls={markOf(`u:${u.uid}`)}
               targetable={OWN_UNIT_MODES.includes(mode) && candidates.includes(u.uid)}
               ready={canMain && u.canAttack && !u.attacked}
               sick={!u.attacked && !u.canAttack}
@@ -641,33 +652,37 @@ export function GameScreen({
               }}
             />
           ))}
-          <EmptySlots count={E.MAX_FIELD - me.field.length} />
+          <EmptySlots count={E.MAX_FIELD - vMe.field.length} />
         </div>
       </div>
 
       {/* 自分情報 */}
       <div className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2" style={NO_BLUR}>
         <div className="flex items-center gap-3">
-          <div key={`me-hp-${me.hp}`} className={`hp-orb me ${me.hp <= 3 ? "is-danger" : ""}`}>{me.hp}</div>
+          <div key={`me-hp-${vMe.hp}`} data-fx="hp-me" className={`hp-orb me ${vMe.hp <= 3 ? "is-danger" : ""}`}>{vMe.hp}</div>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-200">あなた</span>
-              <span className="text-[11px] font-bold text-indigo-200">
-                コスト {me.cost}/{me.maxCost}
+              <span data-fx="cost-me" className="text-[11px] font-bold text-indigo-200">
+                コスト {vMe.cost}/{vMe.maxCost}
               </span>
             </div>
-            <div className="mt-0.5"><ManaBar cost={me.cost} max={me.maxCost} /></div>
+            <div className="mt-0.5"><ManaBar cost={vMe.cost} max={vMe.maxCost} /></div>
             <div className="text-[11px] text-slate-300 mt-0.5">
-              山 {me.deck.length} ・{" "}
-              <button onClick={() => setZone("me")} className="underline text-sky-300">
-                生贄 {me.sacrifice.length}
+              <span data-fx="deck-me">山 {vMe.deck.length}</span> ・{" "}
+              <button data-fx="sac-me" onClick={() => setZone("me")} className="underline text-sky-300">
+                生贄 {vMe.sacrifice.length}
               </button>{" "}
               ・{" "}
               <button onClick={() => setZone("meGrave")} className="underline text-sky-300">
-                墓地 {(me.grave || []).length}（屍 {E.corpseOf(me)}）
+                墓地 {(vMe.grave || []).length}（屍 {E.corpseOf(vMe)}）
               </button>
             </div>
-            <AbilityRow player={me} onTap={(a) => setDetail({ ability: a, mine: true })} />
+            <AbilityRow
+              player={vMe}
+              markOf={(a) => markOf(`ab:${a.uid}`)}
+              onTap={(a) => setDetail({ ability: a, mine: true })}
+            />
           </div>
         </div>
       </div>
@@ -675,7 +690,7 @@ export function GameScreen({
       {/* 手札 */}
       <div className="px-2 pt-1">
         <div className="sme-label">手札 ({me.hand.length})</div>
-        <div className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
+        <div data-fx="hand-me" className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
           {me.hand.map((h, i) => {
             const c = E.handInfo(h);
             if (!c) {
@@ -800,19 +815,11 @@ export function GameScreen({
         </div>
       )}
 
-      {/* 相手の行動の再生 */}
-      {current && (
-        <ReplayOverlay
-          item={current}
-          rest={queue.length - 1}
-          oppLabel={oppLabel}
-          onNext={() => setQueue((q) => q.slice(1))}
-          onSkipAll={() => setQueue([])}
-        />
-      )}
+      {/* 対戦中の演出（帯・カットイン・数字のポップ） */}
+      <FxLayer fx={fxp} oppLabel={oppLabel} />
 
-      {/* ターン切り替えバナー（相手の行動の再生が終わってから） */}
-      {banner && !current && (
+      {/* ターン切り替えバナー（演出が終わってから） */}
+      {banner && !fxPlaying && (
         <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
           <div key={banner.key} className={`turn-banner ${banner.mine ? "mine" : "theirs"}`}>
             {banner.text}
@@ -820,13 +827,31 @@ export function GameScreen({
         </div>
       )}
 
+      {/* ログの行をタップしたときの「詳しく見る」 */}
+      {logDetail && (
+        <ReplayOverlay item={logDetail} oppLabel={oppLabel} onClose={() => setLogDetail(null)} />
+      )}
+
       {/* 全ログ */}
       {showLog && (
         <div onClick={() => setShowLog(false)} className="fixed inset-0 bg-black/75 flex items-end justify-center z-50">
           <div onClick={(e) => e.stopPropagation()} className="sme-sheet rounded-t-2xl p-5 w-full max-w-lg">
-            <div className="sme-heading text-sm mb-3">対戦ログ（新しいものが下）</div>
+            <div className="sme-heading text-sm mb-1">対戦ログ（新しいものが下）</div>
+            <div className="text-[10px] text-slate-400 mb-2">行をタップすると、その行動で何が変わったかを詳しく見られます</div>
+            <div className="flex items-center gap-1 mb-3 text-[11px]">
+              <span className="text-slate-300 mr-1">演出の速さ</span>
+              {FX_SPEEDS.map((x) => (
+                <button
+                  key={x.id}
+                  onClick={() => { setFxSpeed(x.id); saveFxSpeed(x.id); }}
+                  className={`px-2 py-0.5 rounded border ${fxSpeed === x.id ? "bg-sky-600 border-sky-400 text-white" : "border-white/30 text-slate-300"}`}
+                >
+                  {x.label}
+                </button>
+              ))}
+            </div>
             <div className="max-h-96 overflow-y-auto text-xs space-y-1">
-              {(state.log || []).map(renderLog)}
+              {logRows(0)}
             </div>
 
             {/* 不具合報告 */}
@@ -996,8 +1021,9 @@ export function GameScreen({
   );
 }
 
-/* ============ 相手の行動の再生パネル ============ */
-function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
+/* ============ 行動の「詳しく見る」（ログの行をタップしたとき） ============ */
+// item: { lines（その行動のログ）, changes（変化の一覧）, mine（自分の行動か） }
+function ReplayOverlay({ item, oppLabel, onClose }) {
   const lines = item.lines;
   const main =
     lines.find((t) => /を攻撃|プレイヤーに\d+ダメージ|を召喚|を使用|を装着した|を付けた|を外した|を生贄/.test(t)) || lines[0];
@@ -1010,18 +1036,20 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
   else if (/を装着した|を付けた|を外した/.test(main)) { kind = "アビリティ"; color = "bg-cyan-600"; }
   else if (/を生贄/.test(main)) { kind = "生贄"; color = "bg-indigo-600"; }
 
-  const duration = replayMs(item);
   const sideName = (s) => (s === "me" ? "あなた" : oppLabel);
 
   return (
-    <div onClick={onNext} className="fixed inset-0 z-[45] bg-black/50 flex items-center justify-center p-4">
-      <style>{`@keyframes smeShrink { from { width: 100%; } to { width: 0%; } }`}</style>
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
       <div
         className="w-full max-w-sm sme-modal rounded-2xl overflow-hidden"
-        style={{ borderColor: "rgba(255,92,116,0.6)", boxShadow: "0 0 40px rgba(255,92,116,0.35)" }}
+        style={item.mine
+          ? { borderColor: "rgba(52,211,153,0.6)", boxShadow: "0 0 40px rgba(52,211,153,0.3)" }
+          : { borderColor: "rgba(255,92,116,0.6)", boxShadow: "0 0 40px rgba(255,92,116,0.35)" }}
       >
         <div className="flex items-center justify-between px-4 pt-3">
-          <span className="sme-label !text-rose-300">{oppLabel}の行動</span>
+          <span className={`sme-label ${item.mine ? "!text-emerald-300" : "!text-rose-300"}`}>
+            {item.mine ? "あなた" : oppLabel}の行動
+          </span>
           <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${color}`}>{kind}</span>
         </div>
 
@@ -1096,24 +1124,7 @@ function ReplayOverlay({ item, rest, oppLabel, onNext, onSkipAll }) {
           )}
         </div>
 
-        <div className="h-1 bg-slate-700">
-          <div
-            key={item.id}
-            className="h-1 bg-rose-500"
-            style={{ animation: `smeShrink ${duration}ms linear forwards` }}
-          />
-        </div>
-        <div className="flex items-center justify-between px-4 py-2 text-[10px] text-slate-400">
-          <span>タップで次へ{rest > 0 ? `（残り${rest}件）` : ""}</span>
-          {rest > 0 && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onSkipAll(); }}
-              className="px-2 py-1 rounded bg-slate-700 text-slate-200"
-            >
-              すべてスキップ
-            </button>
-          )}
-        </div>
+        <div className="px-4 py-2 text-[10px] text-slate-400 text-center border-t border-white/10">タップで閉じる</div>
       </div>
     </div>
   );
