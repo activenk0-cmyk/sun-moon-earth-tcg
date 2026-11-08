@@ -362,16 +362,19 @@ export default function FxLayer({ fx, oppLabel }) {
           ));
         }
         if (o.type === "sac") {
-          // 手札から生贄置き場へ吸い込まれる
+          // 手札から生贄置き場へ吸い込まれる（表向き・陣営色。裏向きのドローと見分けられるように）
           const from = o.fromRect || r;
           const sx = from.x + from.w / 2 - 17;
           const sy = from.y + from.h / 2 - 23;
+          const c = F.cardOf(o.c);
           return (
             <div
               key={o.key}
-              className="fxo-sac"
+              className={`fxo-sac ${fxClass(c?.faction)}`}
               style={{ left: sx, top: sy, "--dx": `${cx - (sx + 17)}px`, "--dy": `${r.y + r.h / 2 - (sy + 23)}px` }}
-            />
+            >
+              <span>{(o.nm || c?.name || "").slice(0, 6)}</span>
+            </div>
           );
         }
         return null;
