@@ -62,6 +62,10 @@ export function useFxPlayer(state, myId, speed) {
   speedRef.current = speed;
   const queueRef = useRef(queue);
   queueRef.current = queue;
+  // 演出の対象として確認済みのログの通し番号
+  // （新しい行動が届いた最初の描画から「演出中」とみなすために使う。
+  //   これが無いと、決着の一撃の直後に一瞬だけ決着画面になり、戻ったときに全カードが出し直しの動きをしてしまう）
+  const [seenSeq, setSeenSeq] = useState(() => maxSeq(state?.log));
 
   // 新しいログを見つけて再生待ちに追加
   useEffect(() => {
@@ -70,6 +74,7 @@ export function useFxPlayer(state, myId, speed) {
     const curLog = state.log || [];
     const curSeq = maxSeq(curLog);
     prevRef.current = { log: curLog, players: state.players, seq: curSeq, gameNo: state.gameNo || 0, gameId: state.gameId || null };
+    setSeenSeq(curSeq);
     if (!prev || state.phase === "waiting" || state.phase === "lobby") return;
     if (speedRef.current === "none") return;
     if (isHidden()) return; // 裏に回っている間の出来事は再生しない（戻ったときに古い演出が流れないように）
@@ -217,7 +222,11 @@ export function useFxPlayer(state, myId, speed) {
     setOverlays([]);
   }, []);
 
-  return { disp, marks, banner, cutin, overlays, playing: !!current, skipAll };
+  // まだ確認していない新しい行動がある間も「演出中」とする
+  const unseen = maxSeq(state?.log) > seenSeq;
+  // その間の表示は「行動の前の盤面」にする（行動後の盤面が一瞬見えてから戻る、ということを起こさない）
+  const before = unseen && !disp && prevRef.current && speed !== "none" ? prevRef.current.players : null;
+  return { disp: disp || before, marks, banner, cutin, overlays, playing: !!current || unseen, skipAll };
 }
 
 /* ============ 表示 ============ */
