@@ -757,11 +757,22 @@ body > * { position: relative; z-index: 1; }
    対戦中の演出（案B）  ※ app/FxLayer.js・lib/fx.js で使う
    fxa- … 場のカード・アビリティに付けるアニメーション
    fxo- … 画面の上に重ねる数字・札・光る枠
+   再生時間は app/FxLayer.js が --fx-ms（1回の演出の長さ）と --fx-mul（速さの倍率）で渡す。
+   CSSのアニメーションと待ち時間が同じ値になるので、どの端末・どの速さでも途中で切れない
    ============================================================ */
 
+/* 演出中に画面をタップして飛ばす層（iPhoneでタップ時に画面が灰色に光らないように・スクロールで位置がずれないように） */
+.fx-catcher {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* ---- 攻撃：少し跳ねる（自分は上、相手は下） ---- */
-.unit.fxa-bob-up   { animation: fxBobUp 0.38s ease-out both !important; z-index: 6; }
-.unit.fxa-bob-down { animation: fxBobDown 0.38s ease-out both !important; z-index: 6; }
+.unit.unit.fxa-bob-up   { animation: fxBobUp var(--fx-ms, 0.38s) ease-out both; z-index: 6; }
+.unit.unit.fxa-bob-down { animation: fxBobDown var(--fx-ms, 0.38s) ease-out both; z-index: 6; }
 @keyframes fxBobUp {
   0% { transform: translateY(0); }
   40% { transform: translateY(-14px) scale(1.07); filter: brightness(1.3); }
@@ -774,7 +785,7 @@ body > * { position: relative; z-index: 1; }
 }
 
 /* ---- ダメージ：左右に揺れる ---- */
-.unit.fxa-hit { animation: fxShake 0.45s ease-out both !important; }
+.unit.unit.fxa-hit { animation: fxShake var(--fx-ms, 0.45s) ease-out both; }
 @keyframes fxShake {
   0%, 100% { transform: translateX(0); }
   20% { transform: translateX(-7px); box-shadow: 0 0 18px rgba(244, 63, 94, 0.95); }
@@ -784,68 +795,68 @@ body > * { position: relative; z-index: 1; }
 }
 
 /* ---- 強化：緑に光る ---- */
-.unit.fxa-buff { animation: fxBuff 0.46s ease-out both !important; }
+.unit.unit.fxa-buff { animation: fxBuff var(--fx-ms, 0.46s) ease-out both; }
 @keyframes fxBuff {
   0%, 100% { box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
   45% { box-shadow: 0 0 22px rgba(52, 211, 153, 1); transform: scale(1.06); filter: brightness(1.25); }
 }
 
 /* ---- 破壊：縮みながら消える／消滅：ぼやけて消える ---- */
-.unit.fxa-die { animation: fxDie 0.48s ease-in forwards !important; }
+.unit.unit.fxa-die { animation: fxDie var(--fx-ms, 0.48s) ease-in forwards; }
 @keyframes fxDie {
   0% { transform: scale(1); opacity: 1; filter: brightness(1); }
   30% { transform: scale(1.05); filter: brightness(2) saturate(0.4); }
   100% { transform: scale(0.3) rotate(-6deg); opacity: 0; filter: brightness(0.6); }
 }
-.unit.fxa-vanish { animation: fxVanish 0.48s ease-in forwards !important; }
+.unit.unit.fxa-vanish { animation: fxVanish var(--fx-ms, 0.48s) ease-in forwards; }
 @keyframes fxVanish {
   0% { opacity: 1; filter: blur(0); }
   100% { opacity: 0; filter: brightness(2.2) saturate(0.2); transform: scale(1.15); }
 }
 
 /* ---- 手札に戻す：手札側へ戻っていく ---- */
-.unit.fxa-back-down { animation: fxBackDown 0.48s ease-in forwards !important; }
-.unit.fxa-back-up   { animation: fxBackUp 0.48s ease-in forwards !important; }
+.unit.unit.fxa-back-down { animation: fxBackDown var(--fx-ms, 0.48s) ease-in forwards; }
+.unit.unit.fxa-back-up   { animation: fxBackUp var(--fx-ms, 0.48s) ease-in forwards; }
 @keyframes fxBackDown { to { transform: translateY(46px) scale(0.6); opacity: 0; } }
 @keyframes fxBackUp   { to { transform: translateY(-46px) scale(0.6); opacity: 0; } }
 
 /* ---- 召喚：枠が陣営色に光る（トークンは水色、コピーは紫で区別） ---- */
-.unit.fxa-sum-me, .unit.fxa-sum-opp { animation: fxSumGlow 0.5s ease-out both !important; }
+.unit.unit.fxa-sum-me, .unit.unit.fxa-sum-opp { animation: fxSumGlow var(--fx-ms, 0.5s) ease-out both; }
 @keyframes fxSumGlow {
   0% { box-shadow: 0 0 0 rgba(var(--fx-rgb), 0); }
   50% { box-shadow: 0 0 24px rgba(var(--fx-rgb), 1), inset 0 0 12px rgba(var(--fx-rgb), 0.6); border-color: rgba(var(--fx-rgb), 1); }
   100% { box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
 }
-.unit.fxa-sum-token { animation: fxSumToken 0.5s ease-out both !important; }
+.unit.unit.fxa-sum-token { animation: fxSumToken var(--fx-ms, 0.5s) ease-out both; }
 @keyframes fxSumToken {
   50% { box-shadow: 0 0 24px rgba(125, 211, 252, 1); border-color: #7dd3fc; filter: brightness(1.3); }
 }
-.unit.fxa-sum-copy { animation: fxSumCopy 0.5s ease-out both !important; }
+.unit.unit.fxa-sum-copy { animation: fxSumCopy var(--fx-ms, 0.5s) ease-out both; }
 @keyframes fxSumCopy {
   50% { box-shadow: 0 0 24px rgba(192, 132, 252, 1); border-color: #c084fc; filter: brightness(1.3) hue-rotate(20deg); }
 }
 
 /* ---- トリガー・キーワード付与・耐性：金色に光る ---- */
-.unit.fxa-glow { animation: fxGlow 0.5s ease-in-out both !important; }
+.unit.unit.fxa-glow { animation: fxGlow var(--fx-ms, 0.5s) ease-in-out both; }
 @keyframes fxGlow {
   50% { box-shadow: 0 0 22px rgba(253, 224, 71, 0.95); border-color: #fde047; }
 }
 
 /* ---- アビリティの装着枠 ---- */
-.ability-chip.fxa-ab-in { animation: fxAbIn 0.46s ease-out both; }
+.ability-chip.fxa-ab-in { animation: fxAbIn var(--fx-ms, 0.46s) ease-out both; }
 @keyframes fxAbIn {
   0% { transform: scale(1.5); opacity: 0; filter: brightness(2.5); }
   60% { transform: scale(0.96); opacity: 1; box-shadow: 0 0 18px rgba(103, 232, 249, 1); }
   100% { transform: scale(1); }
 }
-.ability-chip.fxa-ab-glow { animation: fxAbGlow 0.5s ease-in-out both; }
+.ability-chip.fxa-ab-glow { animation: fxAbGlow var(--fx-ms, 0.5s) ease-in-out both; }
 @keyframes fxAbGlow { 50% { box-shadow: 0 0 18px rgba(253, 224, 71, 1); filter: brightness(1.4); } }
-.ability-chip.fxa-ab-tick { animation: fxAbTick 0.44s ease-out both; }
+.ability-chip.fxa-ab-tick { animation: fxAbTick var(--fx-ms, 0.44s) ease-out both; }
 @keyframes fxAbTick { 40% { box-shadow: 0 0 16px rgba(251, 191, 36, 1); filter: brightness(1.6); transform: scale(1.08); } }
 /* 割れるように消える */
-.ability-chip.fxa-ab-break { animation: fxAbBreak 0.46s ease-in forwards; }
+.ability-chip.fxa-ab-break { animation: fxAbBreak var(--fx-ms, 0.46s) ease-in forwards; }
 @keyframes fxAbBreak {
-  0% { transform: scale(1); opacity: 1; clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%); }
+  0% { transform: scale(1); opacity: 1; clip-path: polygon(0 0, 100% 0, 100% 50%, 100% 100%, 0 100%); }
   25% { transform: translateX(-3px) rotate(-3deg); filter: brightness(2); }
   50% { transform: translateX(3px) rotate(3deg); clip-path: polygon(0 0, 45% 0, 60% 50%, 40% 100%, 0 100%); }
   100% { transform: translateY(6px) rotate(8deg) scale(0.8); opacity: 0; clip-path: polygon(0 0, 30% 0, 45% 50%, 25% 100%, 0 100%); }
@@ -942,7 +953,7 @@ body > * { position: relative; z-index: 1; }
   white-space: nowrap;
   color: #f43f5e;
   text-shadow: 0 0 6px #000, 0 0 2px #000;
-  animation: fxPop 1s ease-out forwards;
+  animation: fxPop calc(1s * var(--fx-mul, 1)) ease-out forwards;
 }
 .fxo-pop.good { color: #34d399; }
 .fxo-pop.cost { color: #fbbf24; font-size: 15px; }
@@ -967,7 +978,7 @@ body > * { position: relative; z-index: 1; }
   background: linear-gradient(160deg, #fff0c0, #f5b642);
   border: 1px solid #fff4d0;
   box-shadow: 0 0 10px rgba(245, 182, 66, 0.8);
-  animation: fxChip 1.1s ease-out forwards;
+  animation: fxChip calc(1.1s * var(--fx-mul, 1)) ease-out forwards;
 }
 .fxo-chip.good { color: #052e1f; background: linear-gradient(160deg, #d1fae5, #34d399); border-color: #d1fae5; box-shadow: 0 0 10px rgba(52, 211, 153, 0.8); }
 .fxo-chip.info { color: #062033; background: linear-gradient(160deg, #e0f2fe, #7dd3fc); border-color: #e0f2fe; box-shadow: 0 0 10px rgba(125, 211, 252, 0.8); }
@@ -987,7 +998,7 @@ body > * { position: relative; z-index: 1; }
   border-radius: 12px;
   border: 2px solid #f43f5e;
   box-shadow: 0 0 16px rgba(244, 63, 94, 0.9), inset 0 0 10px rgba(244, 63, 94, 0.5);
-  animation: fxRing 0.75s ease-out forwards;
+  animation: fxRing calc(0.75s * var(--fx-mul, 1)) ease-out forwards;
 }
 .fxo-ring.good { border-color: #34d399; box-shadow: 0 0 16px rgba(52, 211, 153, 0.9), inset 0 0 10px rgba(52, 211, 153, 0.5); }
 .fxo-ring.cost { border-color: #fbbf24; box-shadow: 0 0 16px rgba(251, 191, 36, 0.9), inset 0 0 10px rgba(251, 191, 36, 0.5); }
@@ -1012,14 +1023,14 @@ body > * { position: relative; z-index: 1; }
     linear-gradient(160deg, #3b2f7a, #140f3d);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6);
 }
-.fxo-draw { animation: fxDraw 0.6s ease-out both; }
+.fxo-draw { animation: fxDraw calc(0.6s * var(--fx-mul, 1)) ease-out both; }
 @keyframes fxDraw {
   0% { transform: translate(var(--dx), var(--dy)) scale(0.6); opacity: 0; }
   20% { opacity: 1; }
   65% { transform: translate(0, 0) scale(1); opacity: 1; }
   100% { transform: translate(0, 0) scale(1); opacity: 0; }
 }
-.fxo-sac { animation: fxSac 0.55s ease-in forwards; }
+.fxo-sac { animation: fxSac calc(0.55s * var(--fx-mul, 1)) ease-in forwards; }
 @keyframes fxSac {
   0% { transform: translate(0, 0) scale(1); opacity: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(0.2) rotate(20deg); opacity: 0.2; filter: brightness(2); }
