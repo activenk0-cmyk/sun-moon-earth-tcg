@@ -80,7 +80,8 @@ export function StatusLines({ lines }) {
 
 // リーダーに付いているアビリティ（2枠）
 // isTarget(a)：対象として選べるアビリティなら true（光らせる）
-export function AbilityRow({ player, onTap, isTarget }) {
+// markOf(a)：演出中に付けるクラス（lib/fx.js の marksOf）
+export function AbilityRow({ player, onTap, isTarget, markOf }) {
   const list = E.abilitiesOf(player);
   return (
     <div className="ability-row">
@@ -89,8 +90,9 @@ export function AbilityRow({ player, onTap, isTarget }) {
         return (
           <button
             key={a.uid}
+            data-fx={`ab-${a.uid}`}
             onClick={() => onTap(a)}
-            className={`ability-chip ${fxClass(c?.faction)} ${isTarget && isTarget(a) ? "ring-2 ring-rose-400 animate-pulse" : ""}`}
+            className={`ability-chip ${fxClass(c?.faction)} ${isTarget && isTarget(a) ? "ring-2 ring-rose-400 animate-pulse" : ""} ${(markOf && markOf(a)) || ""}`}
           >
             <span className="ab-kind">{abilityShort(c, a.timer)}</span>
             <span className="ab-name">{(c?.name || "").replace(/^(太陽|月|地球|冥王星|水星|土星)の/, "")}</span>
@@ -140,7 +142,8 @@ export function EmptySlots({ count }) {
 
 
 /* ============ ユニット表示 ============ */
-export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onInfo }) {
+// fxCls：演出中に付けるクラス（lib/fx.js の marksOf。攻撃で跳ねる・揺れる・消えるなど）
+export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, fxCls, onTap, onInfo }) {
   const info = E.unitInfo(u);
   const base = info?.stat;
   const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
@@ -158,10 +161,11 @@ export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onT
     look,
     u.attacked ? "is-attacked" : "",
     sick ? "opacity-60 grayscale" : "",
+    fxCls || "",
   ].filter(Boolean).join(" ");
 
   return (
-    <div className="unit-enter">
+    <div className="unit-enter" data-fx={`u-${u.uid}`}>
       <button onClick={onTap} className={cls}>
         {/* 召喚酔い中：頭上で★がクルクル回る */}
         {sick && (
