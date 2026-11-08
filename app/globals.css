@@ -758,17 +758,8 @@ body > * { position: relative; z-index: 1; }
    fxa- … 場のカード・アビリティに付けるアニメーション
    fxo- … 画面の上に重ねる数字・札・光る枠
    再生時間は app/FxLayer.js が --fx-ms（1回の演出の長さ）と --fx-mul（速さの倍率）で渡す。
-   CSSのアニメーションと待ち時間が同じ値になるので、どの端末・どの速さでも途中で切れない
+   CSSのアニメーションと待ち時間が同じ値になるので、どの端末・早回しのときも途中で切れない
    ============================================================ */
-
-/* 演出中に画面をタップして飛ばす層（iPhoneでタップ時に画面が灰色に光らないように・スクロールで位置がずれないように） */
-.fx-catcher {
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
 
 /* ---- 攻撃：少し跳ねる（自分は上、相手は下） ---- */
 .unit.unit.fxa-bob-up   { animation: fxBobUp var(--fx-ms, 0.38s) ease-out both; z-index: 6; }
@@ -889,18 +880,6 @@ body > * { position: relative; z-index: 1; }
 .fx-banner-tag.sum { background: #f59e0b; color: #1e1b0f; }
 .fx-banner-tag.end { background: #334155; }
 
-.fx-skip-hint {
-  position: fixed;
-  right: 8px;
-  bottom: 8px;
-  font-size: 10px;
-  color: rgba(226, 232, 240, 0.75);
-  background: rgba(15, 13, 38, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 2px 6px;
-  pointer-events: none;
-}
 
 /* ---- カットイン（場に姿がないカード） ---- */
 .fx-cutin {
