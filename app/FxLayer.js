@@ -44,7 +44,10 @@ function rectOf(key) {
 }
 
 const OVERLAY_LIFE = 1200; // ポップ・札などを残しておく時間
-const FINISH_MS = 1700; // 決着の一撃の演出の長さ（このあと決着画面になる）
+// 決着の一撃（演出の中心は「当たった瞬間」）
+const SMASH_MS = 520; // 溜め → 踏み込み（攻撃で決着したとき）
+const IMPACT_MS = 700; // 当たった瞬間：ヒットストップ・白いフラッシュ・爆発・全体の揺れ・大きなダメージ数字
+const FINISH_TEXT_MS = 1200; // 最後に「FINISH!」（このあと決着画面になる）
 
 // CSSに再生時間を渡す（--fx-ms：今の演出の長さ / --fx-mul：速さの倍率）
 // 待ち時間とアニメーションの長さを同じ値にして、どの端末でも途中で切れないようにする
@@ -66,7 +69,8 @@ export function useFxPlayer(state, myId, speed) {
   const [banner, setBanner] = useState(null);
   const [cutin, setCutin] = useState(null);
   const [overlays, setOverlays] = useState([]);
-  const [finish, setFinish] = useState(null); // 決着の一撃の演出
+  const [impact, setImpact] = useState(null); // 決着の一撃が当たった瞬間（フラッシュ・爆発）
+  const [finish, setFinish] = useState(null); // 最後の「FINISH!」
   const prevRef = useRef(null);
   const speedRef = useRef(speed);
   speedRef.current = speed;
@@ -127,6 +131,22 @@ export function useFxPlayer(state, myId, speed) {
     };
     const deadline = Date.now() + ITEM_MAX;
     const stop = () => dead || hurry() || Date.now() > deadline;
+    // 決着の一撃：負けた側（loser）のHPが0以下になる出来事を「当たった瞬間」にする
+    const loser = current.end ? Object.keys(current.final || {}).find((k) => k !== current.end) : null;
+    const isLethalHp = (ev) => ev.k === "hp" && ev.p === loser && ev.hp <= 0;
+    let impacted = false;
+    let smash = null; // 踏み込んだ攻撃キャラ { uid, mine }
+    // 踏み込んだキャラは、当たった瞬間まで踏み込んだ位置で止めておく（途中で元の位置に戻らないように）
+    const hold = () => (smash && !impacted ? { [`u:${smash.uid}`]: smash.mine ? "fxa-smash-up" : "fxa-smash-down" } : {});
+    // 当たった瞬間の演出（場のカードは全部揺れ、踏み込んだキャラは反動で戻る）
+    const doImpact = (work) => {
+      impacted = true;
+      const m = {};
+      Object.values(work || {}).forEach((pl) => (pl.field || []).forEach((u) => { m[`u:${u.uid}`] = "fxa-quake"; }));
+      if (smash) m[`u:${smash.uid}`] = smash.mine ? "fxa-recoil-up" : "fxa-recoil-down";
+      setMarks(m);
+      setImpact({ key: E.uid(), rect: rectOf(`hp-${loser === myId ? "me" : "opp"}`) });
+    };
     (async () => {
       const work = F.clonePlayers(current.prev);
       const show = () => setDisp(F.clonePlayers(work));
@@ -134,6 +154,7 @@ export function useFxPlayer(state, myId, speed) {
       for (const g of current.groups) {
         if (stop()) break;
         const shown = new Set();
+        const lethalGroup = !!loser && g.events.some(isLethalHp);
         // 手札からカードを使った（演出は無いが、手札からは先に消す）
         g.events.filter((ev) => ev.k === "play").forEach((ev) => F.applyPre(work, ev, current.final));
         if (g.lines.length) {
@@ -161,22 +182,37 @@ export function useFxPlayer(state, myId, speed) {
           if (stop()) break;
           // 盤面の演出
           const mul = mulNow();
-          const ms = F.stepDuration(step, mul);
+          let ms = F.stepDuration(step, mul);
+          let marks = F.marksOf(step, myId);
+          // 決着の一撃：攻撃は「溜め → 踏み込み」、HPが0になる瞬間は「当たった瞬間」
+          const atk = lethalGroup && !impacted ? step.find((ev) => ev.k === "attack") : null;
+          const lethalNow = lethalGroup && !impacted && step.some(isLethalHp);
+          if (atk) {
+            smash = { uid: atk.u, mine: atk.p === myId };
+            marks = { ...marks, [`u:${atk.u}`]: smash.mine ? "fxa-smash-up" : "fxa-smash-down" };
+            ms = SMASH_MS;
+          }
+          if (lethalNow) ms = IMPACT_MS;
           setFxVars(ms, mul);
           step.forEach((ev) => F.applyPre(work, ev, current.final));
           show();
-          setMarks(F.marksOf(step, myId));
+          if (lethalNow) doImpact(work);
+          else setMarks({ ...marks, ...hold() });
           await frame();
           if (stop()) break;
           const now = Date.now();
+          const loserHp = `hp-${loser === myId ? "me" : "opp"}`;
           const fresh = F.overlaysOf(step, myId)
-            .map((o) => ({ ...o, key: E.uid(), at: now, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null }))
+            .map((o) => ({
+              ...o, key: E.uid(), at: now, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null,
+              big: lethalNow && o.type === "pop" && o.target === loserHp, // 決着のダメージ数字は大きく叩きつける
+            }))
             .filter((o) => o.rect);
           setOverlays((list) => [...list.filter((x) => now - x.at < OVERLAY_LIFE), ...fresh]);
           await pause(ms);
           step.forEach((ev) => F.applyPost(work, ev, current.final));
           show();
-          setMarks({});
+          setMarks(hold());
           if (stop()) break;
           await wait(40);
         }
@@ -186,18 +222,20 @@ export function useFxPlayer(state, myId, speed) {
       if (dead) return;
       setCutin(null);
       setBanner(null);
-      // 決着の一撃：負けた側のHPのところで爆発・白いフラッシュ・場のカードが全部揺れる・中央に「FINISH!」
-      // （リタイアで決着したときは出さない：出来事の記録が無い）
+      // 決着：最後に「FINISH!」（リタイアで決着したときは出さない：出来事の記録が無い）
       if (current.end && current.groups.some((g) => g.events.length)) {
-        const loser = Object.keys(current.final || {}).find((k) => k !== current.end);
-        const r = rectOf(`hp-${loser === myId ? "me" : "opp"}`);
-        const quake = {};
-        Object.values(work || {}).forEach((pl) => (pl.field || []).forEach((u) => { quake[`u:${u.uid}`] = "fxa-quake"; }));
-        setMarks(quake);
-        setFinish({ key: E.uid(), win: current.end === myId, rect: r });
-        await wait(FINISH_MS);
+        // HPが0にならない決着（山札切れ・特殊勝利など）は、ここで「当たった瞬間」の演出を出す
+        if (!impacted) {
+          doImpact(work);
+          await wait(IMPACT_MS);
+          if (dead) return;
+        }
+        setMarks({});
+        setFinish({ key: E.uid(), win: current.end === myId });
+        await wait(FINISH_TEXT_MS);
         if (dead) return;
         setFinish(null);
+        setImpact(null);
       }
       setMarks({});
       setDisp(F.clonePlayers(current.final));
@@ -216,6 +254,7 @@ export function useFxPlayer(state, myId, speed) {
     setMarks({});
     setBanner(null);
     setCutin(null);
+    setImpact(null);
     setFinish(null);
     const t = setTimeout(() => setOverlays([]), OVERLAY_LIFE);
     return () => clearTimeout(t);
@@ -254,24 +293,24 @@ export function useFxPlayer(state, myId, speed) {
   const unseen = maxSeq(state?.log) > seenSeq;
   // その間の表示は「行動の前の盤面」にする（行動後の盤面が一瞬見えてから戻る、ということを起こさない）
   const before = unseen && !disp && prevRef.current && speed !== "none" ? prevRef.current.players : null;
-  return { disp: disp || before, marks, banner, cutin, overlays, finish, playing: !!current || unseen, skipAll };
+  return { disp: disp || before, marks, banner, cutin, overlays, impact, finish, playing: !!current || unseen, skipAll };
 }
 
 /* ============ 表示 ============ */
 export default function FxLayer({ fx, oppLabel }) {
   // 演出中も画面は止めない（タップはそのままカードの操作になる）
-  const { banner, cutin, overlays, finish } = fx;
+  const { banner, cutin, overlays, impact, finish } = fx;
   return (
     <>
-      {/* 決着の一撃（ドカン） */}
-      {finish && (
+      {/* 決着の一撃が当たった瞬間（白いフラッシュ・負けた側のHPのところで爆発） */}
+      {impact && (
         <>
-          <div key={`${finish.key}-flash`} className="fxo-flash" />
-          {finish.rect && (
+          <div key={`${impact.key}-flash`} className="fxo-flash" />
+          {impact.rect && (
             <div
-              key={`${finish.key}-boom`}
+              key={`${impact.key}-boom`}
               className="fxo-boom"
-              style={{ left: finish.rect.x + finish.rect.w / 2, top: finish.rect.y + finish.rect.h / 2 }}
+              style={{ left: impact.rect.x + impact.rect.w / 2, top: impact.rect.y + impact.rect.h / 2 }}
             >
               <span className="ring r1" />
               <span className="ring r2" />
@@ -283,10 +322,14 @@ export default function FxLayer({ fx, oppLabel }) {
               ))}
             </div>
           )}
-          <div className="fixed inset-0 z-[48] flex items-center justify-center pointer-events-none">
-            <div key={`${finish.key}-txt`} className={`fxo-finish ${finish.win ? "win" : "lose"}`}>FINISH!</div>
-          </div>
         </>
+      )}
+
+      {/* 最後の「FINISH!」 */}
+      {finish && (
+        <div className="fixed inset-0 z-[48] flex items-center justify-center pointer-events-none">
+          <div key={`${finish.key}-txt`} className={`fxo-finish ${finish.win ? "win" : "lose"}`}>FINISH!</div>
+        </div>
       )}
 
 
@@ -336,7 +379,7 @@ export default function FxLayer({ fx, oppLabel }) {
         const cx = r.x + r.w / 2;
         if (o.type === "pop") {
           return (
-            <div key={o.key} className={`fxo-pop ${o.tone || "bad"}`} style={{ left: cx, top: r.y + r.h * 0.35 }}>
+            <div key={o.key} className={`fxo-pop ${o.tone || "bad"} ${o.big ? "big" : ""}`} style={{ left: cx, top: r.y + r.h * 0.35 }}>
               {o.text}
             </div>
           );
