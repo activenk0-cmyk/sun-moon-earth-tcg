@@ -4,7 +4,10 @@
 // ・useFxPlayer：新しいログの「出来事」を見つけて順番に再生する（GameScreen で使う）
 //   演出の間は、ひとつ前の盤面から出来事に合わせて少しずつ進めた盤面（disp）を表示し、
 //   終わったら本当の盤面に切り替える（破壊されたカードが演出の前に消えないようにするため）
-// ・FxLayer：帯（画面上部の一言）・カットイン・数字のポップ・札・光る枠・タップで飛ばす
+// ・FxLayer：帯（画面上部の一言）・カットイン・数字のポップ・札・光る枠
+// 演出中もそのまま操作できる（画面を止めない）。
+// ・自分が次の行動をしたら、再生中の演出はすぐに終わらせて、新しい行動の演出を始める
+// ・相手（CPU）の行動が演出より先に進んだら、残りを早回しにして追いつく
 // 出来事→演出の対応表は lib/fx.js、アニメーションは app/globals.css（fxa- / fxo- / fx-）
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -46,7 +49,7 @@ function setFxVars(ms, mul) {
 const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
 /* ============ 再生 ============ */
-// state：今の状態 / myId：自分のID / speed："normal" | "fast" | "none"
+// state：今の状態 / myId：自分のID / speed："on"（あり） | "none"（なし）
 export function useFxPlayer(state, myId, speed) {
   const [queue, setQueue] = useState([]); // 再生待ち（1回の状態の変化ごと）
   const [disp, setDisp] = useState(null); // 演出中に表示するプレイヤーのデータ（null なら本当の盤面）
@@ -57,6 +60,8 @@ export function useFxPlayer(state, myId, speed) {
   const prevRef = useRef(null);
   const speedRef = useRef(speed);
   speedRef.current = speed;
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
 
   // 新しいログを見つけて再生待ちに追加
   useEffect(() => {
@@ -85,7 +90,8 @@ export function useFxPlayer(state, myId, speed) {
       const target = groups.find((g) => !g.mine) || groups[0];
       target.events = F.diffToEvents(changes, myId, oppId, state.players);
     }
-    setQueue((q) => [...q, { id: E.uid(), prev: prev.players, final: state.players, groups }]);
+    const mine = groups.some((g) => g.mine);
+    setQueue((q) => [...q, { id: E.uid(), prev: prev.players, final: state.players, groups, mine }]);
   }, [state, myId]);
 
   const current = queue[0] || null;
@@ -94,14 +100,22 @@ export function useFxPlayer(state, myId, speed) {
   useEffect(() => {
     if (!current) return;
     let dead = false;
+    // 自分の次の行動がもう来ている → この演出はすぐに終わらせる
+    const hurry = () => queueRef.current.slice(1).some((it) => it.mine);
+    // 次の行動がもう来ている → 早回し
+    const mulNow = () => (queueRef.current.length > 1 ? F.CATCHUP_MUL : F.BASE_MUL);
+    // 待つ（途中で終わらせる必要が出たら、すぐに戻る）
+    const pause = async (ms) => {
+      const end = Date.now() + ms;
+      while (!dead && !hurry() && Date.now() < end) await wait(Math.min(30, end - Date.now()));
+    };
+    const stop = () => dead || hurry();
     (async () => {
-      const mul = Math.max(0.05, F.speedMul(speedRef.current) || 0.05);
-      setFxVars(null, mul);
       const work = F.clonePlayers(current.prev);
       const show = () => setDisp(F.clonePlayers(work));
       show();
       for (const g of current.groups) {
-        if (dead) return;
+        if (stop()) break;
         const shown = new Set();
         if (g.lines.length) {
           const hb = rectOf("header");
@@ -110,44 +124,49 @@ export function useFxPlayer(state, myId, speed) {
             key: E.uid(), text: F.mainLine(g), tag: F.groupTag(g), mine: g.mine,
             top: hb ? hb.y + hb.h : 0, left: hb ? hb.x : 0, width: hb ? hb.w : null,
           });
-          await wait(F.BANNER_LEAD * mul);
+          await pause(F.BANNER_LEAD * mulNow());
         } else {
           setBanner(null);
         }
         for (const step of F.buildSteps(g.events)) {
-          if (dead) return;
+          if (stop()) break;
           // 場に姿がないカード（マジック・アビリティ・破壊されたキャラの効果など）はカットイン
           const cuts = F.cutinsOf(step, work, myId, shown);
           for (const c of cuts) {
-            setCutin({ ...c, key: E.uid(), ms: Math.round(F.CUTIN_MS * mul) });
-            await wait(F.CUTIN_MS * mul);
-            if (dead) return;
+            if (stop()) break;
+            const cm = Math.round(F.CUTIN_MS * mulNow());
+            setCutin({ ...c, key: E.uid(), ms: cm });
+            await pause(cm);
             setCutin(null);
-            await wait(50 * mul);
           }
+          if (stop()) break;
           // 盤面の演出
+          const mul = mulNow();
           const ms = F.stepDuration(step, mul);
           setFxVars(ms, mul);
           step.forEach((ev) => F.applyPre(work, ev, current.final));
           show();
           setMarks(F.marksOf(step, myId));
           await frame();
-          if (dead) return;
+          if (stop()) break;
           const now = Date.now();
           const fresh = F.overlaysOf(step, myId)
             .map((o) => ({ ...o, key: E.uid(), at: now, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null }))
             .filter((o) => o.rect);
           setOverlays((list) => [...list.filter((x) => now - x.at < OVERLAY_LIFE), ...fresh]);
-          await wait(ms);
-          if (dead) return;
+          await pause(ms);
           step.forEach((ev) => F.applyPost(work, ev));
           show();
           setMarks({});
+          if (stop()) break;
           await wait(40);
         }
-        await wait(F.GROUP_GAP * mul);
+        if (stop()) break;
+        await pause(F.GROUP_GAP * mulNow());
       }
       if (dead) return;
+      setCutin(null);
+      setMarks({});
       setBanner(null);
       setDisp(F.clonePlayers(current.final));
       setQueue((q) => q.slice(1));
@@ -169,7 +188,7 @@ export function useFxPlayer(state, myId, speed) {
     return () => clearTimeout(t);
   }, [queue.length]);
 
-  // 演出を「なし」にしたら、残りは飛ばす
+  // 演出を「なし」にしたら、残りは飛ばす（画面が裏に回ったときも飛ばす。下の処理）
   useEffect(() => {
     if (speed === "none") setQueue([]);
   }, [speed]);
@@ -203,15 +222,10 @@ export function useFxPlayer(state, myId, speed) {
 
 /* ============ 表示 ============ */
 export default function FxLayer({ fx, oppLabel }) {
-  const { banner, cutin, overlays, playing, skipAll } = fx;
+  // 演出中も画面は止めない（タップはそのままカードの操作になる）
+  const { banner, cutin, overlays } = fx;
   return (
     <>
-      {/* 演出中：画面タップで残りを飛ばす */}
-      {playing && (
-        <div onClick={skipAll} className="fx-catcher fixed inset-0 z-[44]" aria-label="演出をスキップ">
-          <div className="fx-skip-hint">タップでスキップ</div>
-        </div>
-      )}
 
       {/* 帯（画面上部の一言） */}
       {banner && (
