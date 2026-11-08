@@ -958,6 +958,22 @@ body > * { position: relative; z-index: 1; }
 .fxo-pop.good { color: #34d399; }
 .fxo-pop.cost { color: #fbbf24; font-size: 15px; }
 .fxo-pop.info { color: #7dd3fc; font-size: 15px; }
+/* 決着のダメージ数字：大きく叩きつける */
+.fxo-pop.big {
+  font-size: 48px;
+  z-index: 49;
+  -webkit-text-stroke: 1px #2a0008;
+  text-shadow: 0 0 12px #000, 0 0 30px rgba(244, 63, 94, 0.9);
+  animation: fxPopBig 1.1s cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards;
+}
+@keyframes fxPopBig {
+  0% { opacity: 0; transform: translate(-50%, 0) scale(2.6); }
+  12% { opacity: 1; transform: translate(-50%, 0) scale(0.9); }
+  20% { transform: translate(-50%, 0) scale(1.08); }
+  28% { transform: translate(-50%, 0) scale(1); }
+  75% { opacity: 1; transform: translate(-50%, -12px) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -36px) scale(1); }
+}
 @keyframes fxPop {
   0% { opacity: 0; transform: translate(-50%, 6px) scale(0.6); }
   20% { opacity: 1; transform: translate(-50%, -6px) scale(1.2); }
@@ -1054,9 +1070,42 @@ body > * { position: relative; z-index: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(0.2) rotate(20deg); opacity: 0.2; filter: brightness(2); }
 }
 
-/* ---- 決着の一撃（ドカン）：app/FxLayer.js の finish ---- */
-/* 場のカードが全部ガタガタ揺れる（画面全体は揺らさない：重ねている表示の位置がずれないように） */
-.unit.unit.fxa-quake { animation: fxQuake 0.7s ease-out both; }
+/* ---- 決着の一撃：app/FxLayer.js の impact / finish ---- */
+/* 演出の中心は「当たった瞬間」：溜め → 踏み込み → ヒットストップ → 白いフラッシュ・爆発・全体の揺れ → FINISH! */
+
+/* 溜め → 踏み込み（自分は上へ、相手は下へ）。当たった位置で止まる */
+.unit.unit.fxa-smash-up   { animation: fxSmashUp 0.52s cubic-bezier(0.5, 0, 0.2, 1) forwards; z-index: 8; }
+.unit.unit.fxa-smash-down { animation: fxSmashDown 0.52s cubic-bezier(0.5, 0, 0.2, 1) forwards; z-index: 8; }
+@keyframes fxSmashUp {
+  0% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(12px) scale(0.92); filter: brightness(1.15); }
+  72% { transform: translateY(-40px) scale(1.2); filter: brightness(1.9); }
+  100% { transform: translateY(-32px) scale(1.14); filter: brightness(1.5); }
+}
+@keyframes fxSmashDown {
+  0% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(-12px) scale(0.92); filter: brightness(1.15); }
+  72% { transform: translateY(40px) scale(1.2); filter: brightness(1.9); }
+  100% { transform: translateY(32px) scale(1.14); filter: brightness(1.5); }
+}
+/* 当たった瞬間：一瞬止まって（ヒットストップ）から、反動で戻る */
+.unit.unit.fxa-recoil-up   { animation: fxRecoilUp 0.7s ease-out both; z-index: 8; }
+.unit.unit.fxa-recoil-down { animation: fxRecoilDown 0.7s ease-out both; z-index: 8; }
+@keyframes fxRecoilUp {
+  0%, 14% { transform: translateY(-32px) scale(1.14); filter: brightness(2.2); }
+  40% { transform: translateY(8px) scale(0.97); filter: brightness(1.2); }
+  65% { transform: translateY(-4px) scale(1.01); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
+}
+@keyframes fxRecoilDown {
+  0%, 14% { transform: translateY(32px) scale(1.14); filter: brightness(2.2); }
+  40% { transform: translateY(-8px) scale(0.97); filter: brightness(1.2); }
+  65% { transform: translateY(4px) scale(1.01); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
+}
+/* 場のカードが全部ガタッと揺れる（ヒットストップの分だけ遅らせて始める）
+   ※ 画面全体は揺らさない：重ねている表示の位置がずれないように */
+.unit.unit.fxa-quake { animation: fxQuake 0.6s ease-out 0.09s both; }
 @keyframes fxQuake {
   0%, 100% { transform: translate(0, 0) rotate(0); }
   10% { transform: translate(-7px, 3px) rotate(-3deg); }
@@ -1136,7 +1185,7 @@ body > * { position: relative; z-index: 1; }
   font-weight: 900;
   letter-spacing: 0.08em;
   white-space: nowrap;
-  animation: fxFinish 1.7s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  animation: fxFinish 1.2s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
 .fxo-finish.win {
   color: #ffd700;
