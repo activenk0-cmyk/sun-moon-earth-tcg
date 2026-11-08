@@ -754,3 +754,275 @@ body > * { position: relative; z-index: 1; }
   .sme-btn:hover:not(:disabled):not(:active) { filter: none; transform: none; }
   .hand-card.is-playable:hover { transform: none; }
 }
+
+/* ============================================================
+   対戦中の演出（案B）  ※ app/FxLayer.js・lib/fx.js で使う
+   fxa- … 場のカード・アビリティに付けるアニメーション
+   fxo- … 画面の上に重ねる数字・札・光る枠
+   ============================================================ */
+
+/* ---- 攻撃：少し跳ねる（自分は上、相手は下） ---- */
+.unit.fxa-bob-up   { animation: fxBobUp 0.38s ease-out both !important; z-index: 6; }
+.unit.fxa-bob-down { animation: fxBobDown 0.38s ease-out both !important; z-index: 6; }
+@keyframes fxBobUp {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-14px) scale(1.07); filter: brightness(1.3); }
+  100% { transform: translateY(0); }
+}
+@keyframes fxBobDown {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(14px) scale(1.07); filter: brightness(1.3); }
+  100% { transform: translateY(0); }
+}
+
+/* ---- ダメージ：左右に揺れる ---- */
+.unit.fxa-hit { animation: fxShake 0.45s ease-out both !important; }
+@keyframes fxShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); box-shadow: 0 0 18px rgba(244, 63, 94, 0.95); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(4px); }
+}
+
+/* ---- 強化：緑に光る ---- */
+.unit.fxa-buff { animation: fxBuff 0.46s ease-out both !important; }
+@keyframes fxBuff {
+  0%, 100% { box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
+  45% { box-shadow: 0 0 22px rgba(52, 211, 153, 1); transform: scale(1.06); filter: brightness(1.25); }
+}
+
+/* ---- 破壊：縮みながら消える／消滅：ぼやけて消える ---- */
+.unit.fxa-die { animation: fxDie 0.48s ease-in forwards !important; }
+@keyframes fxDie {
+  0% { transform: scale(1); opacity: 1; filter: brightness(1); }
+  30% { transform: scale(1.05); filter: brightness(2) saturate(0.4); }
+  100% { transform: scale(0.3) rotate(-6deg); opacity: 0; filter: brightness(0.6); }
+}
+.unit.fxa-vanish { animation: fxVanish 0.48s ease-in forwards !important; }
+@keyframes fxVanish {
+  0% { opacity: 1; filter: blur(0); }
+  100% { opacity: 0; filter: blur(6px) brightness(2); transform: scale(1.15); }
+}
+
+/* ---- 手札に戻す：手札側へ戻っていく ---- */
+.unit.fxa-back-down { animation: fxBackDown 0.48s ease-in forwards !important; }
+.unit.fxa-back-up   { animation: fxBackUp 0.48s ease-in forwards !important; }
+@keyframes fxBackDown { to { transform: translateY(46px) scale(0.6); opacity: 0; } }
+@keyframes fxBackUp   { to { transform: translateY(-46px) scale(0.6); opacity: 0; } }
+
+/* ---- 召喚：枠が陣営色に光る（トークンは水色、コピーは紫で区別） ---- */
+.unit.fxa-sum-me, .unit.fxa-sum-opp { animation: fxSumGlow 0.5s ease-out both !important; }
+@keyframes fxSumGlow {
+  0% { box-shadow: 0 0 0 rgba(var(--fx-rgb), 0); }
+  50% { box-shadow: 0 0 24px rgba(var(--fx-rgb), 1), inset 0 0 12px rgba(var(--fx-rgb), 0.6); border-color: rgba(var(--fx-rgb), 1); }
+  100% { box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6); }
+}
+.unit.fxa-sum-token { animation: fxSumToken 0.5s ease-out both !important; }
+@keyframes fxSumToken {
+  50% { box-shadow: 0 0 24px rgba(125, 211, 252, 1); border-color: #7dd3fc; filter: brightness(1.3); }
+}
+.unit.fxa-sum-copy { animation: fxSumCopy 0.5s ease-out both !important; }
+@keyframes fxSumCopy {
+  50% { box-shadow: 0 0 24px rgba(192, 132, 252, 1); border-color: #c084fc; filter: brightness(1.3) hue-rotate(20deg); }
+}
+
+/* ---- トリガー・キーワード付与・耐性：金色に光る ---- */
+.unit.fxa-glow { animation: fxGlow 0.5s ease-in-out both !important; }
+@keyframes fxGlow {
+  50% { box-shadow: 0 0 22px rgba(253, 224, 71, 0.95); border-color: #fde047; }
+}
+
+/* ---- アビリティの装着枠 ---- */
+.ability-chip.fxa-ab-in { animation: fxAbIn 0.46s ease-out both; }
+@keyframes fxAbIn {
+  0% { transform: scale(1.5); opacity: 0; filter: brightness(2.5); }
+  60% { transform: scale(0.96); opacity: 1; box-shadow: 0 0 18px rgba(103, 232, 249, 1); }
+  100% { transform: scale(1); }
+}
+.ability-chip.fxa-ab-glow { animation: fxAbGlow 0.5s ease-in-out both; }
+@keyframes fxAbGlow { 50% { box-shadow: 0 0 18px rgba(253, 224, 71, 1); filter: brightness(1.4); } }
+.ability-chip.fxa-ab-tick { animation: fxAbTick 0.44s ease-out both; }
+@keyframes fxAbTick { 40% { box-shadow: 0 0 16px rgba(251, 191, 36, 1); filter: brightness(1.6); transform: scale(1.08); } }
+/* 割れるように消える */
+.ability-chip.fxa-ab-break { animation: fxAbBreak 0.46s ease-in forwards; }
+@keyframes fxAbBreak {
+  0% { transform: scale(1); opacity: 1; clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%); }
+  25% { transform: translateX(-3px) rotate(-3deg); filter: brightness(2); }
+  50% { transform: translateX(3px) rotate(3deg); clip-path: polygon(0 0, 45% 0, 60% 50%, 40% 100%, 0 100%); }
+  100% { transform: translateY(6px) rotate(8deg) scale(0.8); opacity: 0; clip-path: polygon(0 0, 30% 0, 45% 50%, 25% 100%, 0 100%); }
+}
+
+/* ---- 帯（画面上部の一言） ---- */
+.fx-banner {
+  margin: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 0 0 10px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(76, 5, 25, 0.94);
+  border: 1px solid #fb7185;
+  border-top: 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  animation: fxBannerIn 0.22s ease-out both;
+}
+.fx-banner.me { background: rgba(6, 78, 59, 0.94); border-color: #34d399; }
+@keyframes fxBannerIn { from { transform: translateY(-110%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.fx-banner-tag { flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #475569; }
+.fx-banner-tag.atk { background: #dc2626; }
+.fx-banner-tag.mag { background: #0284c7; }
+.fx-banner-tag.abl { background: #0891b2; }
+.fx-banner-tag.sac { background: #4f46e5; }
+.fx-banner-tag.sum { background: #f59e0b; color: #1e1b0f; }
+.fx-banner-tag.end { background: #334155; }
+
+.fx-skip-hint {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  font-size: 10px;
+  color: rgba(226, 232, 240, 0.75);
+  background: rgba(15, 13, 38, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 2px 6px;
+  pointer-events: none;
+}
+
+/* ---- カットイン（場に姿がないカード） ---- */
+.fx-cutin {
+  width: 100%;
+  max-width: 300px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 2px solid rgba(var(--fx-rgb), 0.9);
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(var(--fx-rgb), 0.35), transparent 65%),
+    linear-gradient(170deg, #1d1838 0%, #0c0a1c 100%);
+  box-shadow: 0 0 40px rgba(var(--fx-rgb), 0.55), 0 12px 30px rgba(0, 0, 0, 0.6);
+  animation-name: fxCutin;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
+}
+@keyframes fxCutin {
+  0% { transform: translateX(-40px) scale(0.85); opacity: 0; }
+  18% { transform: translateX(0) scale(1.04); opacity: 1; }
+  28% { transform: scale(1); }
+  82% { transform: scale(1); opacity: 1; }
+  100% { transform: translateX(30px) scale(0.96); opacity: 0; }
+}
+.fx-cutin-lb {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #1e1b0f;
+  background: linear-gradient(160deg, #fff0c0, #f5b642);
+}
+.fx-cutin-text {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- 数字のポップ ---- */
+.fxo-pop {
+  position: fixed;
+  z-index: 46;
+  pointer-events: none;
+  font-size: 20px;
+  font-weight: 900;
+  white-space: nowrap;
+  color: #f43f5e;
+  text-shadow: 0 0 6px #000, 0 0 2px #000;
+  animation: fxPop 1s ease-out forwards;
+}
+.fxo-pop.good { color: #34d399; }
+.fxo-pop.cost { color: #fbbf24; font-size: 15px; }
+.fxo-pop.info { color: #7dd3fc; font-size: 15px; }
+@keyframes fxPop {
+  0% { opacity: 0; transform: translate(-50%, 6px) scale(0.6); }
+  20% { opacity: 1; transform: translate(-50%, -6px) scale(1.2); }
+  100% { opacity: 0; transform: translate(-50%, -30px) scale(1); }
+}
+
+/* ---- 小さな札（「召喚トリガー」など） ---- */
+.fxo-chip {
+  position: fixed;
+  z-index: 46;
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #1e1b0f;
+  background: linear-gradient(160deg, #fff0c0, #f5b642);
+  border: 1px solid #fff4d0;
+  box-shadow: 0 0 10px rgba(245, 182, 66, 0.8);
+  animation: fxChip 1.1s ease-out forwards;
+}
+.fxo-chip.good { color: #052e1f; background: linear-gradient(160deg, #d1fae5, #34d399); border-color: #d1fae5; box-shadow: 0 0 10px rgba(52, 211, 153, 0.8); }
+.fxo-chip.info { color: #062033; background: linear-gradient(160deg, #e0f2fe, #7dd3fc); border-color: #e0f2fe; box-shadow: 0 0 10px rgba(125, 211, 252, 0.8); }
+@keyframes fxChip {
+  0% { opacity: 0; transform: translate(-50%, -60%) scale(0.7); }
+  15% { opacity: 1; transform: translate(-50%, -100%) scale(1.08); }
+  25% { transform: translate(-50%, -100%) scale(1); }
+  80% { opacity: 1; transform: translate(-50%, -100%); }
+  100% { opacity: 0; transform: translate(-50%, -130%); }
+}
+
+/* ---- 光る枠（HP・コスト・手札・山札など） ---- */
+.fxo-ring {
+  position: fixed;
+  z-index: 46;
+  pointer-events: none;
+  border-radius: 12px;
+  border: 2px solid #f43f5e;
+  box-shadow: 0 0 16px rgba(244, 63, 94, 0.9), inset 0 0 10px rgba(244, 63, 94, 0.5);
+  animation: fxRing 0.75s ease-out forwards;
+}
+.fxo-ring.good { border-color: #34d399; box-shadow: 0 0 16px rgba(52, 211, 153, 0.9), inset 0 0 10px rgba(52, 211, 153, 0.5); }
+.fxo-ring.cost { border-color: #fbbf24; box-shadow: 0 0 16px rgba(251, 191, 36, 0.9), inset 0 0 10px rgba(251, 191, 36, 0.5); }
+.fxo-ring.info { border-color: #7dd3fc; box-shadow: 0 0 16px rgba(125, 211, 252, 0.9), inset 0 0 10px rgba(125, 211, 252, 0.5); }
+@keyframes fxRing {
+  0% { opacity: 0; transform: scale(1.12); }
+  25% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; }
+}
+
+/* ---- ドロー：裏向きのカードが手札へスライド／生贄：手札から生贄置き場へ吸い込まれる ---- */
+.fxo-draw, .fxo-sac {
+  position: fixed;
+  z-index: 46;
+  pointer-events: none;
+  width: 34px;
+  height: 46px;
+  border-radius: 6px;
+  border: 1.5px solid #e8c874;
+  background:
+    repeating-linear-gradient(45deg, rgba(232, 200, 116, 0.25) 0 4px, transparent 4px 8px),
+    linear-gradient(160deg, #3b2f7a, #140f3d);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6);
+}
+.fxo-draw { animation: fxDraw 0.6s ease-out both; }
+@keyframes fxDraw {
+  0% { transform: translate(var(--dx), var(--dy)) scale(0.6); opacity: 0; }
+  20% { opacity: 1; }
+  65% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(0, 0) scale(1); opacity: 0; }
+}
+.fxo-sac { animation: fxSac 0.55s ease-in forwards; }
+@keyframes fxSac {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(0.2) rotate(20deg); opacity: 0.2; filter: brightness(2); }
+}
