@@ -241,7 +241,8 @@ body > * { position: relative; z-index: 1; }
   border: 1px solid rgba(232, 200, 116, 0.22);
   border-radius: 14px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(4px);
+  /* 背景ぼかし（backdrop-filter）は使わない：端末によって数字が描き直されないことがあるため、
+     どの端末でも同じ描き方になるよう全端末で使わない */
 }
 .sme-panel-opp {
   background: linear-gradient(160deg, rgba(70, 20, 40, 0.55), rgba(14, 10, 26, 0.86));
@@ -741,9 +742,6 @@ body > * { position: relative; z-index: 1; }
    ============================================================ */
 /* ---- iPhone・iPad（Safari など iOS のブラウザ）だけに効く ---- */
 @supports (-webkit-touch-callout: none) {
-  /* 背景ぼかしの上で文字や数字が変わると、描き直されずに古い表示が残ることがあるため、
-     パネルのぼかしを切る（パネルはもともと濃い色なので、見た目はほぼ変わらない） */
-  html .sme-panel { -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* 16px より小さい入力欄をタップすると画面が自動で拡大されたままになるため、入力欄だけ 16px にする */
   html input.text-sm, html textarea.text-sm { font-size: 16px; }
 }
@@ -802,7 +800,7 @@ body > * { position: relative; z-index: 1; }
 .unit.fxa-vanish { animation: fxVanish 0.48s ease-in forwards !important; }
 @keyframes fxVanish {
   0% { opacity: 1; filter: blur(0); }
-  100% { opacity: 0; filter: blur(6px) brightness(2); transform: scale(1.15); }
+  100% { opacity: 0; filter: brightness(2.2) saturate(0.2); transform: scale(1.15); }
 }
 
 /* ---- 手札に戻す：手札側へ戻っていく ---- */
