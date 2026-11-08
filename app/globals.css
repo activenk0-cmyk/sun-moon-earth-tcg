@@ -1035,3 +1035,104 @@ body > * { position: relative; z-index: 1; }
   0% { transform: translate(0, 0) scale(1); opacity: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(0.2) rotate(20deg); opacity: 0.2; filter: brightness(2); }
 }
+
+/* ---- 決着の一撃（ドカン）：app/FxLayer.js の finish ---- */
+/* 場のカードが全部ガタガタ揺れる（画面全体は揺らさない：重ねている表示の位置がずれないように） */
+.unit.unit.fxa-quake { animation: fxQuake 0.7s ease-out both; }
+@keyframes fxQuake {
+  0%, 100% { transform: translate(0, 0) rotate(0); }
+  10% { transform: translate(-7px, 3px) rotate(-3deg); }
+  20% { transform: translate(7px, -3px) rotate(3deg); }
+  30% { transform: translate(-6px, -2px) rotate(-2deg); }
+  40% { transform: translate(6px, 2px) rotate(2deg); }
+  55% { transform: translate(-4px, 1px) rotate(-1deg); }
+  70% { transform: translate(3px, -1px) rotate(1deg); }
+  85% { transform: translate(-1px, 0) rotate(0); }
+}
+/* 白いフラッシュ */
+.fxo-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 47;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.95), rgba(255, 210, 120, 0.75) 45%, rgba(255, 60, 80, 0.4) 100%);
+  animation: fxFlash 0.55s ease-out forwards;
+}
+@keyframes fxFlash {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+/* 負けた側のHPのところで爆発 */
+.fxo-boom {
+  position: fixed;
+  z-index: 48;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.fxo-boom .ring {
+  position: absolute;
+  left: -20px;
+  top: -20px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 4px solid #fde047;
+  box-shadow: 0 0 20px rgba(253, 224, 71, 0.9), inset 0 0 14px rgba(255, 120, 60, 0.8);
+  animation: fxBoomRing 0.8s ease-out both;
+}
+.fxo-boom .ring.r2 { border-color: #fb923c; animation-delay: 0.1s; }
+.fxo-boom .ring.r3 { border-color: #f43f5e; animation-delay: 0.2s; }
+@keyframes fxBoomRing {
+  0% { transform: scale(0.2); opacity: 1; }
+  100% { transform: scale(6); opacity: 0; border-width: 1px; }
+}
+.fxo-boom .spark-arm {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+.fxo-boom .spark {
+  position: absolute;
+  left: 0;
+  top: -2px;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #fff7d6, #fbbf24 50%, rgba(244, 63, 94, 0));
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.9);
+  animation: fxSpark 0.7s ease-out both;
+}
+@keyframes fxSpark {
+  0% { transform: translateX(6px) scaleX(0.3); opacity: 1; }
+  60% { opacity: 1; }
+  100% { transform: translateX(110px) scaleX(1); opacity: 0; }
+}
+/* 中央に「FINISH!」を叩きつける */
+.fxo-finish {
+  font-family: "Cinzel", "Noto Serif JP", serif;
+  font-size: 58px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  animation: fxFinish 1.7s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.fxo-finish.win {
+  color: #ffd700;
+  text-shadow: 0 0 24px rgba(255, 215, 0, 0.95), 0 0 60px rgba(255, 140, 0, 0.6), 0 4px 0 #7a4a00;
+}
+.fxo-finish.lose {
+  color: #ff6b7d;
+  text-shadow: 0 0 24px rgba(255, 60, 90, 0.95), 0 0 60px rgba(140, 0, 30, 0.6), 0 4px 0 #4a0010;
+}
+@keyframes fxFinish {
+  0% { transform: scale(3.2) rotate(-6deg); opacity: 0; }
+  14% { transform: scale(0.92) rotate(0); opacity: 1; }
+  20% { transform: scale(1.06); }
+  26% { transform: scale(1); }
+  82% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
