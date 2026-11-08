@@ -125,6 +125,8 @@ export function useFxPlayer(state, myId, speed) {
       for (const g of current.groups) {
         if (stop()) break;
         const shown = new Set();
+        // 手札からカードを使った（演出は無いが、手札からは先に消す）
+        g.events.filter((ev) => ev.k === "play").forEach((ev) => F.applyPre(work, ev, current.final));
         if (g.lines.length) {
           const hb = rectOf("header");
           // 帯は、画面上部のパネル（場と同じ中央の列）の真下に、同じ幅で出す
@@ -163,7 +165,7 @@ export function useFxPlayer(state, myId, speed) {
             .filter((o) => o.rect);
           setOverlays((list) => [...list.filter((x) => now - x.at < OVERLAY_LIFE), ...fresh]);
           await pause(ms);
-          step.forEach((ev) => F.applyPost(work, ev));
+          step.forEach((ev) => F.applyPost(work, ev, current.final));
           show();
           setMarks({});
           if (stop()) break;
