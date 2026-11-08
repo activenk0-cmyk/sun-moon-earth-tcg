@@ -57,11 +57,9 @@ const isOwnMode = (m) => OWN_UNIT_MODES.includes(m) || OWN_HAND_MODES.includes(m
 
 /* ============ CPU戦（CPUの手番を自動で進める） ============ */
 export function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch, onTitle, onRetire, rankView }) {
-  const [replaying, setReplaying] = useState(false);
-
+  // CPUは演出を待たずに次の行動へ進む（演出の方が早回しで追いつく）
   useEffect(() => {
     if (!state || state.phase !== "play" || state.turn !== CPU_ID) return;
-    if (replaying) return; // 演出が終わるまで待つ
     // ドロー（ターン開始）は長めに待ってバナーを見せる
     const delay = E.phaseOf(state) === "draw" ? 1400 : 850;
     const t = setTimeout(() => {
@@ -69,7 +67,7 @@ export function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch
       if (next) setState(stampLog(next, state));
     }, delay);
     return () => clearTimeout(t);
-  }, [state, cpuDeck, setState, replaying]);
+  }, [state, cpuDeck, setState]);
 
   return (
     <GameScreen
@@ -83,7 +81,6 @@ export function CpuGame({ state, setState, cpuDeck, detail, setDetail, onRematch
       onRematch={onRematch}
       onTitle={onTitle}
       onRetire={onRetire}
-      onReplayingChange={setReplaying}
       rankView={rankView}
     />
   );
@@ -151,7 +148,7 @@ export function GameScreen({
   const [graveSort, setGraveSort] = useState("new"); // 墓地の並び順（"new" = 新しい順 / "cost" = コストの大きい順）
   const [showLog, setShowLog] = useState(false);
   const [logDetail, setLogDetail] = useState(null); // ログの行をタップしたときの「詳しく見る」
-  const [fxSpeed, setFxSpeed] = useState("normal"); // 演出の速さ（ふつう／はやい／なし）
+  const [fxSpeed, setFxSpeed] = useState("on"); // 演出のあり／なし
   const [confirmRetire, setConfirmRetire] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const lastTurnKey = useRef(null);
@@ -165,7 +162,7 @@ export function GameScreen({
 
   const isCpu = !!cpuDeck;
 
-  // 演出の速さ（端末に保存）
+  // 演出のあり／なし（端末に保存）
   useEffect(() => {
     setFxSpeed(loadFxSpeed());
   }, []);
@@ -248,17 +245,13 @@ export function GameScreen({
     setBanner({ key, mine, text: mine ? "あなたのターン" : `${oppLabel}のターン` });
   }, [state?.turnCount, state?.turn, state?.phase, myId, oppLabel]);
 
-  // バナーは演出がすべて終わってから表示
+  // ターン切り替えバナーは、ターンが変わったときに1回だけ表示して消す
+  // （演出が始まっても消えるまでの時間はリセットしない）
   useEffect(() => {
-    if (!banner || fxPlaying) return;
+    if (!banner) return;
     const t = setTimeout(() => setBanner(null), 1600);
     return () => clearTimeout(t);
-  }, [banner, fxPlaying]);
-
-  // CPU戦：演出中はCPUを止める
-  useEffect(() => {
-    if (onReplayingChange) onReplayingChange(fxPlaying);
-  }, [fxPlaying, onReplayingChange]);
+  }, [banner]);
 
   // ログを常に最新までスクロール
   useEffect(() => {
@@ -818,8 +811,8 @@ export function GameScreen({
       {/* 対戦中の演出（帯・カットイン・数字のポップ） */}
       <FxLayer fx={fxp} oppLabel={oppLabel} />
 
-      {/* ターン切り替えバナー（演出が終わってから） */}
-      {banner && !fxPlaying && (
+      {/* ターン切り替えバナー */}
+      {banner && (
         <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
           <div key={banner.key} className={`turn-banner ${banner.mine ? "mine" : "theirs"}`}>
             {banner.text}
@@ -839,7 +832,7 @@ export function GameScreen({
             <div className="sme-heading text-sm mb-1">対戦ログ（新しいものが下）</div>
             <div className="text-[10px] text-slate-400 mb-2">行をタップすると、その行動で何が変わったかを詳しく見られます</div>
             <div className="flex items-center gap-1 mb-3 text-[11px]">
-              <span className="text-slate-300 mr-1">演出の速さ</span>
+              <span className="text-slate-300 mr-1">演出</span>
               {FX_SPEEDS.map((x) => (
                 <button
                   key={x.id}
