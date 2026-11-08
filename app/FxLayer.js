@@ -4,7 +4,7 @@
 // ・useFxPlayer：新しいログの「出来事」を見つけて順番に再生する（GameScreen で使う）
 //   演出の間は、ひとつ前の盤面から出来事に合わせて少しずつ進めた盤面（disp）を表示し、
 //   終わったら本当の盤面に切り替える（破壊されたカードが演出の前に消えないようにするため）
-// ・FxLayer：帯（画面上部の一言）・カットイン・数字のポップ・札・光る枠
+// ・FxLayer：帯（画面上部の一言）・カットイン・数字のポップ・札・光る枠・決着の一撃（ドカン）
 // 演出中もそのまま操作できる（画面を止めない）。
 // ・自分が次の行動をしたら、再生中の演出はすぐに終わらせて、新しい行動の演出を始める
 // ・相手（CPU）の行動が演出より先に進んだら、残りを早回しにして追いつく
@@ -36,6 +36,7 @@ function rectOf(key) {
 }
 
 const OVERLAY_LIFE = 1200; // ポップ・札などを残しておく時間
+const FINISH_MS = 1700; // 決着の一撃の演出の長さ（このあと決着画面になる）
 
 // CSSに再生時間を渡す（--fx-ms：今の演出の長さ / --fx-mul：速さの倍率）
 // 待ち時間とアニメーションの長さを同じ値にして、どの端末でも途中で切れないようにする
@@ -57,6 +58,7 @@ export function useFxPlayer(state, myId, speed) {
   const [banner, setBanner] = useState(null);
   const [cutin, setCutin] = useState(null);
   const [overlays, setOverlays] = useState([]);
+  const [finish, setFinish] = useState(null); // 決着の一撃の演出
   const prevRef = useRef(null);
   const speedRef = useRef(speed);
   speedRef.current = speed;
@@ -96,7 +98,8 @@ export function useFxPlayer(state, myId, speed) {
       target.events = F.diffToEvents(changes, myId, oppId, state.players);
     }
     const mine = groups.some((g) => g.mine);
-    setQueue((q) => [...q, { id: E.uid(), prev: prev.players, final: state.players, groups, mine }]);
+    const end = state.phase === "end" && state.winner ? state.winner : null; // この行動で決着したら勝者のID
+    setQueue((q) => [...q, { id: E.uid(), prev: prev.players, final: state.players, groups, mine, end }]);
   }, [state, myId]);
 
   const current = queue[0] || null;
@@ -171,8 +174,21 @@ export function useFxPlayer(state, myId, speed) {
       }
       if (dead) return;
       setCutin(null);
-      setMarks({});
       setBanner(null);
+      // 決着の一撃：負けた側のHPのところで爆発・白いフラッシュ・場のカードが全部揺れる・中央に「FINISH!」
+      // （リタイアで決着したときは出さない：出来事の記録が無い）
+      if (current.end && current.groups.some((g) => g.events.length)) {
+        const loser = Object.keys(current.final || {}).find((k) => k !== current.end);
+        const r = rectOf(`hp-${loser === myId ? "me" : "opp"}`);
+        const quake = {};
+        Object.values(work || {}).forEach((pl) => (pl.field || []).forEach((u) => { quake[`u:${u.uid}`] = "fxa-quake"; }));
+        setMarks(quake);
+        setFinish({ key: E.uid(), win: current.end === myId, rect: r });
+        await wait(FINISH_MS);
+        if (dead) return;
+        setFinish(null);
+      }
+      setMarks({});
       setDisp(F.clonePlayers(current.final));
       setQueue((q) => q.slice(1));
     })();
@@ -189,6 +205,7 @@ export function useFxPlayer(state, myId, speed) {
     setMarks({});
     setBanner(null);
     setCutin(null);
+    setFinish(null);
     const t = setTimeout(() => setOverlays([]), OVERLAY_LIFE);
     return () => clearTimeout(t);
   }, [queue.length]);
@@ -226,15 +243,41 @@ export function useFxPlayer(state, myId, speed) {
   const unseen = maxSeq(state?.log) > seenSeq;
   // その間の表示は「行動の前の盤面」にする（行動後の盤面が一瞬見えてから戻る、ということを起こさない）
   const before = unseen && !disp && prevRef.current && speed !== "none" ? prevRef.current.players : null;
-  return { disp: disp || before, marks, banner, cutin, overlays, playing: !!current || unseen, skipAll };
+  return { disp: disp || before, marks, banner, cutin, overlays, finish, playing: !!current || unseen, skipAll };
 }
 
 /* ============ 表示 ============ */
 export default function FxLayer({ fx, oppLabel }) {
   // 演出中も画面は止めない（タップはそのままカードの操作になる）
-  const { banner, cutin, overlays } = fx;
+  const { banner, cutin, overlays, finish } = fx;
   return (
     <>
+      {/* 決着の一撃（ドカン） */}
+      {finish && (
+        <>
+          <div key={`${finish.key}-flash`} className="fxo-flash" />
+          {finish.rect && (
+            <div
+              key={`${finish.key}-boom`}
+              className="fxo-boom"
+              style={{ left: finish.rect.x + finish.rect.w / 2, top: finish.rect.y + finish.rect.h / 2 }}
+            >
+              <span className="ring r1" />
+              <span className="ring r2" />
+              <span className="ring r3" />
+              {Array.from({ length: 12 }).map((_, i) => (
+                <span key={i} className="spark-arm" style={{ transform: `rotate(${i * 30}deg)` }}>
+                  <span className="spark" style={{ animationDelay: `${(i % 3) * 40}ms` }} />
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="fixed inset-0 z-[48] flex items-center justify-center pointer-events-none">
+            <div key={`${finish.key}-txt`} className={`fxo-finish ${finish.win ? "win" : "lose"}`}>FINISH!</div>
+          </div>
+        </>
+      )}
+
 
       {/* 帯（画面上部の一言） */}
       {banner && (
