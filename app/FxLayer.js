@@ -92,7 +92,11 @@ export function useFxPlayer(state, myId, speed) {
         const shown = new Set();
         if (g.lines.length) {
           const hb = rectOf("header");
-          setBanner({ key: E.uid(), text: F.mainLine(g), tag: F.groupTag(g), mine: g.mine, top: hb ? hb.y + hb.h : 0 });
+          // 帯は、画面上部のパネル（場と同じ中央の列）の真下に、同じ幅で出す
+          setBanner({
+            key: E.uid(), text: F.mainLine(g), tag: F.groupTag(g), mine: g.mine,
+            top: hb ? hb.y + hb.h : 0, left: hb ? hb.x : 0, width: hb ? hb.w : null,
+          });
           await wait(F.BANNER_LEAD * mul);
         } else {
           setBanner(null);
@@ -177,8 +181,11 @@ export default function FxLayer({ fx, oppLabel }) {
 
       {/* 帯（画面上部の一言） */}
       {banner && (
-        <div className="fixed left-0 right-0 z-[46] pointer-events-none" style={{ top: banner.top }}>
-          <div key={banner.key} className={`fx-banner max-w-lg mx-auto ${banner.mine ? "me" : ""}`}>
+        <div
+          className="fixed z-[46] pointer-events-none"
+          style={banner.width ? { top: banner.top, left: banner.left, width: banner.width } : { top: banner.top, left: 0, right: 0 }}
+        >
+          <div key={banner.key} className={`fx-banner ${banner.mine ? "me" : ""}`}>
             <span className={`fx-banner-tag ${banner.tag.cls}`}>{banner.tag.text}</span>
             <span className="truncate">
               {banner.mine ? "あなた" : oppLabel}：{banner.text}
