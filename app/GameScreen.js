@@ -482,6 +482,9 @@ export function GameScreen({
   const vMe = (fxp.disp && fxp.disp[myId]) || me;
   const vOpp = (fxp.disp && oppId && fxp.disp[oppId]) || opp;
   const markOf = (key) => fxp.marks[key] || "";
+  // 演出中に表示する手札（演出がまだ届いていないカードは出さない）
+  const dispHand = fxp.disp && fxp.disp[myId] ? new Set((fxp.disp[myId].hand || []).map((h) => h.uid)) : null;
+  const shownHand = dispHand ? me.hand.filter((h) => dispHand.has(h.uid)) : me.hand;
 
   // 置き場の一覧（生贄置き場 or 墓地）
   const isGraveZone = zone === "meGrave" || zone === "oppGrave";
@@ -688,9 +691,12 @@ export function GameScreen({
 
       {/* 手札 */}
       <div className="px-2 pt-1">
-        <div className="sme-label">手札 ({me.hand.length})</div>
+        <div className="sme-label">手札 ({shownHand.length})</div>
         <div data-fx="hand-me" className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
           {me.hand.map((h, i) => {
+            // 演出中は、ドローなどの演出がまだ届いていないカードを出さない（演出と同じ瞬間に現れる）
+            // ※ 操作の判定（i・コスト）は本当の手札で行う。何か操作すれば演出はすぐ終わり、全部表示される
+            if (dispHand && !dispHand.has(h.uid)) return null;
             const c = E.handInfo(h);
             if (!c) {
               return (
@@ -708,8 +714,8 @@ export function GameScreen({
             const bright = isCand || can || canSac;
             const look = isCand ? "is-target" : bright ? "is-playable" : "is-dim";
             return (
+              <div key={h.uid} className="hand-enter shrink-0">
               <button
-                key={h.uid}
                 onClick={() => {
                   if (mode) {
                     if (OWN_HAND_MODES.includes(mode)) resolveTarget(h.uid);
@@ -742,6 +748,7 @@ export function GameScreen({
                   )}
                 </div>
               </button>
+              </div>
             );
           })}
         </div>
