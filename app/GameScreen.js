@@ -624,27 +624,33 @@ export function GameScreen({
       <div className="px-2 pt-1 pb-6">
         <div className="sme-label mb-0.5">自分の場</div>
         <div className="flex gap-1 flex-wrap justify-center">
-          {vMe.field.map((u) => (
-            <UnitCard
-              key={u.uid} u={u} selected={sel === u.uid}
-              fxCls={markOf(`u:${u.uid}`)}
-              targetable={OWN_UNIT_MODES.includes(mode) && candidates.includes(u.uid)}
-              ready={canMain && u.canAttack && !u.attacked}
-              sick={!u.attacked && !u.canAttack}
-              onInfo={() => setDetail({ unit: u })}
-              onTap={() => {
-                if (mode) {
-                  if (OWN_UNIT_MODES.includes(mode)) resolveTarget(u.uid);
-                  return;
-                }
-                if (canMain && u.canAttack && !u.attacked) {
-                  setSel(sel === u.uid ? null : u.uid);
-                } else {
-                  setDetail({ unit: u });
-                }
-              }}
-            />
-          ))}
+          {vMe.field.map((u) => {
+            // 表示は演出中の盤面（u）、攻撃できるかどうかの判定は本当の盤面（ru）で行う
+            // （演出の途中でも、英雄・ヒデオの2回目の攻撃などをすぐ選べるように）
+            const ru = me.field.find((x) => x.uid === u.uid);
+            const canAtk = !!ru && canMain && ru.canAttack && !ru.attacked;
+            return (
+              <UnitCard
+                key={u.uid} u={u} selected={sel === u.uid}
+                fxCls={markOf(`u:${u.uid}`)}
+                targetable={OWN_UNIT_MODES.includes(mode) && candidates.includes(u.uid)}
+                ready={canAtk}
+                sick={ru ? !ru.attacked && !ru.canAttack : !u.attacked && !u.canAttack}
+                onInfo={() => setDetail({ unit: ru || u })}
+                onTap={() => {
+                  if (mode) {
+                    if (OWN_UNIT_MODES.includes(mode)) resolveTarget(u.uid);
+                    return;
+                  }
+                  if (canAtk) {
+                    setSel(sel === u.uid ? null : u.uid);
+                  } else {
+                    setDetail({ unit: ru || u });
+                  }
+                }}
+              />
+            );
+          })}
           <EmptySlots count={E.MAX_FIELD - vMe.field.length} />
         </div>
       </div>
