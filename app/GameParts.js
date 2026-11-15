@@ -13,8 +13,11 @@ import * as E from "../lib/engine";
 
 export const PHASE_LABEL = { draw: "ドロー", main: "メイン", sacrifice: "生贄" };
 
-export const fxClass = (f) =>
-  f === "sun" || f === "moon" || f === "earth" || f === "pluto" || f === "mercury" ? `fx-${f}` : "fx-none";
+const FX_FACTIONS = ["sun", "moon", "earth", "pluto", "mercury", "saturn"];
+export const fxClass = (f) => (FX_FACTIONS.includes(f) ? `fx-${f}` : "fx-none");
+
+// 屍を参照するカード（今の屍を表示する）
+const CORPSE_CARDS = ["saturn_princess", "saturn_fadeout", "saturn_eclipse", "saturn_hideo"];
 
 // カードの「今の状況」の表示（例：このターン使ったカードの枚数・ダイレクトの回数・タイマーの残り）
 // p: そのカードの持ち主 / opts.unit: 場のユニット / opts.ability: 付いているアビリティ
@@ -38,10 +41,21 @@ export function cardStatus(c, p, opts = {}) {
     out.push(`ダイレクトした回数：${n}回${n < 2 ? `（あと${2 - n}回で効果発動）` : "（効果は発動済み）"}`);
   }
   if (id === "earth_abyss" && opts.unit) {
-    out.push(opts.unit.firstAttackUsed ? "アタックトリガー：使用済み" : "アタックトリガー：未使用");
+    out.push(opts.unit.firstAttackUsed ? "攻撃トリガー：使用済み" : "攻撃トリガー：未使用");
   }
   if (opts.ability && c.abilityKind === "timer") {
     out.push(`タイマーの残り：${opts.ability.timer}（自分のターン開始時に1減り、0で破壊）`);
+  }
+  if (CORPSE_CARDS.includes(id) && !(opts.unit && id === "saturn_hideo")) {
+    out.push(`今の屍：${E.corpseOf(p)}`);
+  }
+  if (id === "saturn_princess" && opts.unit && opts.unit.noDeathTrigger) {
+    out.push("このコピーは破壊トリガーを持たない");
+  }
+  if (id === "saturn_hideo" && opts.unit) {
+    if (opts.unit.immuneDestroy) out.push("カードの効果で破壊されない");
+    if (opts.unit.immuneEffectDamage) out.push("交戦以外でダメージを受けない");
+    if (!opts.unit.immuneDestroy) out.push("耐性なし（召喚した時の屍が30未満）");
   }
   if (c.id === "mercury_gate") out.push(`今の山札：${p.deck.length}枚`);
   if (c.id === "mercury_sonic") out.push(`即時召喚の追加コスト：${E.hasteExtraOf(p)}`);
@@ -62,7 +76,9 @@ export function StatusLines({ lines }) {
 }
 
 // リーダーに付いているアビリティ（2枠）
-export function AbilityRow({ player, onTap }) {
+// isTarget(a)：対象として選べるアビリティなら true（光らせる）
+// markOf(a)：演出中に付けるクラス（lib/fx.js の marksOf）
+export function AbilityRow({ player, onTap, isTarget, markOf }) {
   const list = E.abilitiesOf(player);
   return (
     <div className="ability-row">
@@ -71,11 +87,13 @@ export function AbilityRow({ player, onTap }) {
         return (
           <button
             key={a.uid}
+            data-fx={`ab-${a.uid}`}
             onClick={() => onTap(a)}
-            className={`ability-chip ${fxClass(c?.faction)}`}
+            className={`ability-chip ${fxClass(c?.faction)} ${isTarget && isTarget(a) ? "ring-2 ring-rose-400 animate-pulse" : ""} ${(markOf && markOf(a)) || ""}`}
           >
-            <span className="ab-kind">{abilityShort(c, a.timer)}</span>
-            <span className="ab-name">{(c?.name || "").replace(/^水星の/, "")}</span>
+            {/* 数字が変わったら作り直す（どの端末でも、変わった瞬間に確実に描き直されるように） */}
+            <span key={`t-${a.timer ?? ""}`} className="ab-kind">{abilityShort(c, a.timer)}</span>
+            <span className="ab-name">{(c?.name || "").replace(/^(太陽|月|地球|冥王星|水星|土星)の/, "")}</span>
           </button>
         );
       })}
@@ -122,7 +140,8 @@ export function EmptySlots({ count }) {
 
 
 /* ============ ユニット表示 ============ */
-export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onTap, onInfo }) {
+// fxCls：演出中に付けるクラス（lib/fx.js の marksOf。攻撃で跳ねる・揺れる・消えるなど）
+export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, fxCls, onTap, onInfo }) {
   const info = E.unitInfo(u);
   const base = info?.stat;
   const statCls = base == null ? "" : u.stat > base ? "is-up" : u.stat < base ? "is-down" : "";
@@ -140,10 +159,11 @@ export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onT
     look,
     u.attacked ? "is-attacked" : "",
     sick ? "opacity-60 grayscale" : "",
+    fxCls || "",
   ].filter(Boolean).join(" ");
 
   return (
-    <div className="unit-enter">
+    <div className="unit-enter" data-fx={`u-${u.uid}`}>
       <button onClick={onTap} className={cls}>
         {/* 召喚酔い中：頭上で★がクルクル回る */}
         {sick && (
@@ -166,7 +186,8 @@ export function UnitCard({ u, foe, selected, targetable, ready, sick, flash, onT
         )}
         <div className="unit-name">{u.name}</div>
         <div className="flex justify-between items-end mt-1">
-          <span className={`unit-stat ${statCls}`}>{u.stat}</span>
+          {/* 数字が変わったら作り直す（どの端末でも、変わった瞬間に確実に描き直されるように） */}
+          <span key={`s-${u.stat}`} className={`unit-stat ${statCls}`}>{u.stat}</span>
           <div className="flex flex-col gap-0.5 items-end">
             {u.keywords?.includes("defender") && <span className="unit-kw def">守</span>}
             {u.keywords?.includes("invincible") && <span className="unit-kw inv">無</span>}
