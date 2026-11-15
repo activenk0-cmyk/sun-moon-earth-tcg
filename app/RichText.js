@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { FACTION_LABEL, typeLabel } from "../lib/cards";
-import { TERMS, TOKEN_NOTE, SYSTEM_NOTE, cardByName, splitRichText } from "../lib/glossary";
+import { TERMS, cardByName, splitRichText } from "../lib/glossary";
 
 const stop = (e) => e.stopPropagation();
 
@@ -59,7 +59,6 @@ function InfoPop({ item, onClose }) {
   } else {
     const found = cardByName(item.name);
     const c = found?.card;
-    const note = found?.kind === "token" ? TOKEN_NOTE : found?.kind === "system" ? SYSTEM_NOTE : null;
     body = c ? (
       <>
         <div className="text-xs mb-1 text-slate-300 font-bold">
@@ -74,7 +73,6 @@ function InfoPop({ item, onClose }) {
         <p className="text-sm leading-relaxed text-slate-200">
           <RichText text={c.text} />
         </p>
-        {note && <p className="text-[11px] leading-relaxed text-slate-400 mt-3">{note}</p>}
       </>
     ) : null;
   }
