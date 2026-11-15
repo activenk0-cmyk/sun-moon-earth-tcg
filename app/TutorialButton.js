@@ -21,8 +21,8 @@ function initialBoard() {
     turnCount: 1,
     phase: "draw",
     me: {
-      hp: 10, cost: 2, maxCost: 2, deck: 20, sac: 0, sacrificed: false,
-      hand: [card("h1", "騎士見習い", 2), card("h2", "大剣士", 5), card("h3", "魔導士", 4)],
+      hp: 10, cost: 4, maxCost: 4, deck: 20, sac: 0, sacrificed: false,
+      hand: [card("h1", "騎士見習い", 2), card("h2", "大剣士", 5), card("h3", "魔導士", 6)],
       field: [unit("u1", "戦士", 3), unit("u2", "弓兵", 2)],
       pile: [card("h4", "槍兵", 1), card("h5", "見張り番", 3), card("h6", "斥候", 2), card("h7", "司祭", 4)],
     },
@@ -33,6 +33,7 @@ function initialBoard() {
   };
 }
 
+const HASTE = 4; // 即時召喚の追加コスト
 const clone = (b) => JSON.parse(JSON.stringify(b));
 
 function drawOne(me) {
@@ -48,13 +49,13 @@ const ACT = {
     n.phase = "main";
     return n;
   },
-  play(b, uid) {
+  play(b, uid, haste) {
     const n = clone(b);
     const i = n.me.hand.findIndex((h) => h.uid === uid);
     const c = n.me.hand[i];
     n.me.hand.splice(i, 1);
-    n.me.cost -= c.cost;
-    n.me.field.push({ ...unit(c.uid, c.name, c.stat, c.faction), sick: true });
+    n.me.cost -= c.cost + (haste ? HASTE : 0);
+    n.me.field.push({ ...unit(c.uid, c.name, c.stat, c.faction), sick: !haste });
     return n;
   },
   attack(b, uid, target) {
@@ -98,13 +99,13 @@ function sacSeq(uid) {
 const OPP_TURN = [
   [(n) => { n.turn = "opp"; n.phase = "draw"; n.opp.hand += 1; n.opp.deck -= 1; }, "相手のドロー"],
   [(n) => { n.phase = "main"; n.opp.hand -= 1; n.opp.cost -= 3; n.opp.field.push({ ...unit("o2", "ゴブリン", 3, "moon"), sick: true }); }, "相手が召喚"],
-  [(n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 2; }, "相手も生贄でパワーアップ"],
+  [(n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 3; }, "相手も生贄でパワーアップ"],
   [(n) => {
     n.turn = "me"; n.phase = "draw"; n.turnCount = 2;
     n.me.cost = n.me.maxCost; n.me.sacrificed = false;
     n.me.field.forEach((u) => { u.sick = false; u.attacked = false; });
     n.opp.field.forEach((u) => { u.sick = false; });
-  }, "あなたの番！ コストが 2→3 に増えた", { meCost: "3/3" }],
+  }, "あなたの番！ コストが 4→5 に増えた", { meCost: "5/5" }],
 ];
 
 /* ============ 変わった場所に出す数字（−2・破壊！など） ============ */
@@ -141,7 +142,7 @@ const STEPS = [
   },
   {
     allow: { play: ["h1"] },
-    hints: () => [{ key: "meCost", text: "今のコストは 2" }, { key: "hand", text: "コスト2のカードを出そう", below: true, at: "bottom" }],
+    hints: () => [{ key: "meCost", text: "今のコストは 4" }, { key: "hand", text: "コスト4までのカードを出せる", below: true }],
     focus: () => ["card:h1", "meCost"],
     toasts: ["コストを払って召喚！", "出したターンはお休み（★）"],
   },
@@ -178,13 +179,15 @@ const STEPS = [
     focus: () => ["controls"],
   },
   {
-    allow: { play: ["h5"] },
-    hints: () => [{ key: "meCost", text: "コスト 3 に増えた" }, { key: "hand", text: "コスト3のカードも出せる！", below: true, at: "bottom" }],
-    focus: () => ["card:h5", "meCost"],
-    toasts: ["コストが増えるほど強いカードが出せる"],
+    allow: { haste: ["h4"] },
+    hints: (sel, b, sheet) => (sheet
+      ? [{ key: "haste", text: "+4コストで今すぐ攻撃！" }]
+      : [{ key: "meCost", text: "コスト 5 に増えた" }, { key: "hand", text: "槍兵をタップ", below: true }]),
+    focus: (sel, b, sheet) => (sheet ? ["haste"] : ["card:h4", "meCost"]),
+    toasts: ["即時召喚ならすぐ攻撃できる！"],
   },
   {
-    allow: { select: ["u1", "u2", "h1"], target: ["face"] },
+    allow: { select: ["u1", "u2", "h1", "h4"], target: ["face"] },
     hints: (sel) => [sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "meField", text: "全員で攻撃！" }],
     focus: (sel) => (sel ? ["face"] : ["meField", "oppHp"]),
     done: (b) => b.opp.hp <= 0,
@@ -193,6 +196,7 @@ const STEPS = [
 
 /* ============ 光らせる・暗くする ============ */
 const CONTAINERS = {
+  haste: () => false,
   oppPanel: (k) => k === "oppHp",
   oppField: (k) => k.startsWith("u:o"),
   face: () => false,
@@ -363,11 +367,12 @@ function Board({ b, ui, sel, allow, interactive, onAct }) {
           {b.me.hand.map((h) => {
             const canPlay = ok(allow.play, h.uid) && b.phase === "main" && h.cost <= b.me.cost;
             const canSac = ok(allow.sac, h.uid) && b.phase === "sacrifice";
+            const canHaste = ok(allow.haste, h.uid) && b.phase === "main" && h.cost + HASTE <= b.me.cost;
             return (
               <div key={h.uid} className={`hand-enter shrink-0 rounded-xl ${zoneClass(`card:${h.uid}`, ui.focus)}`}>
                 <button
-                  onClick={() => (canPlay ? onAct({ type: "play", uid: h.uid }) : canSac && onAct({ type: "sac", uid: h.uid }))}
-                  className={`hand-card fx-${h.faction} ${canPlay || canSac ? "is-playable" : "is-dim"}`}
+                  onClick={() => (canPlay ? onAct({ type: "play", uid: h.uid }) : canHaste ? onAct({ type: "sheet", uid: h.uid }) : canSac && onAct({ type: "sac", uid: h.uid }))}
+                  className={`hand-card fx-${h.faction} ${canPlay || canSac || canHaste ? "is-playable" : "is-dim"}`}
                 >
                   <div className="flex justify-end">
                     <span className="cost-gem"><span>{h.cost}</span></span>
@@ -458,7 +463,7 @@ const DETAILS = [
   ["先攻・後攻", "後攻はちょっと有利", ["先攻は最初のターンだけドローなし。", "後攻は最初のターンの終わりに、手札3枚のコストが1下がる。"]],
   ["コスト", "毎ターン全回復", ["最初は1、生贄で増えて最大10。", "場に出せるキャラは5体まで。"]],
   ["生贄", "1ターン1回", ["コスト上限+1・1枚引く・カードのコスト分HP回復。", "しなくてもOK。上限10になったらできない。"]],
-  ["攻撃", "1体につき1ターン1回", ["出したターンは攻撃できない（+4コストで即攻撃）。", "減った数字は元に戻らない。"]],
+  ["攻撃", "1体につき1ターン1回", ["出したターンは攻撃できない。+4コストの即時召喚なら攻撃できる。", "減った数字は元に戻らない。"]],
   ["マーク", "キャラの右下のマーク", ["守：相手はこのキャラしか攻撃できない", "速：出したターンから攻撃できる", "闘：出したターンからキャラを攻撃できる", "隠：相手のキャラから攻撃されない"]],
 ];
 
@@ -505,6 +510,7 @@ function Tutorial({ onClose }) {
   const [ghosts, setGhosts] = useState({ me: [], opp: [] });
   const [toast, setToast] = useState(null);
   const [view, setView] = useState("play"); // play / clear / details
+  const [sheet, setSheet] = useState(null); // 手札をタップして開く「召喚／即時召喚」の選択
   const timers = useRef([]);
   const rootRef = useRef(null);
   const boardRef = useRef(board);
@@ -517,8 +523,8 @@ function Tutorial({ onClose }) {
 
   const ui = {
     // 操作待ちは「次に押す所」、変化を見せている間は「変わった所」を光らせる
-    focus: interactive ? step.focus(sel, board) : Object.keys(popMap),
-    hints: interactive ? step.hints(sel, board) : [],
+    focus: interactive ? step.focus(sel, board, sheet) : Object.keys(popMap),
+    hints: interactive ? step.hints(sel, board, sheet) : [],
     pops: popMap,
     popN,
     ghosts,
@@ -590,6 +596,8 @@ function Tutorial({ onClose }) {
     if (a.type === "select") return setSel(sel === a.uid ? null : a.uid);
     if (a.type === "draw" && al.draw) return apply(ACT.draw(board));
     if (a.type === "play") return apply(ACT.play(board, a.uid));
+    if (a.type === "sheet") return setSheet(a.uid);
+    if (a.type === "haste") { setSheet(null); return apply(ACT.play(board, a.uid, true)); }
     if (a.type === "attack") return apply(ACT.attack(board, a.uid, a.target));
     if (a.type === "toSac" && al.toSac) return apply(ACT.toSac(board));
     if (a.type === "sac") return runSeq(sacSeq(a.uid));
@@ -605,6 +613,7 @@ function Tutorial({ onClose }) {
     setBusy(false);
     clearShow();
     setView("play");
+    setSheet(null);
   }
 
   return (
@@ -620,7 +629,7 @@ function Tutorial({ onClose }) {
               スキップ
             </button>
           </div>
-          <div className="pb-20">
+          <div className="pb-8">
             <Board b={board} ui={ui} sel={sel} allow={step.allow} interactive={interactive} onAct={onAct} />
           </div>
           {toast && (
@@ -628,6 +637,25 @@ function Tutorial({ onClose }) {
               <div key={toast.n} className="tut-toast">{toast.text}</div>
             </div>
           )}
+          {sheet && interactive && (() => {
+            const h = board.me.hand.find((x) => x.uid === sheet);
+            return (
+              <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/60">
+                <div className="sme-sheet rounded-t-2xl p-5 w-full max-w-lg">
+                  <div className="sme-heading text-lg mb-1">{h.name}</div>
+                  <div className="mb-4"><span className={`unit-stat fx-${h.faction}`}>{h.stat}</span></div>
+                  <div className="flex flex-col gap-3">
+                    <button disabled className="sme-btn sme-btn-sun opacity-40">召喚（コスト {h.cost}）</button>
+                    <Spot k="haste" ui={ui} className="rounded-xl">
+                      <button onClick={() => onAct({ type: "haste", uid: h.uid })} className="sme-btn sme-btn-danger sme-glow">
+                        即時召喚（コスト {h.cost}+{HASTE}）
+                      </button>
+                    </Spot>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {intro < 2 && <Intro page={intro} onNext={() => setIntro(intro + 1)} />}
           {view === "clear" && <Clear onDetails={() => setView("details")} onReplay={replay} onClose={onClose} />}
         </>
