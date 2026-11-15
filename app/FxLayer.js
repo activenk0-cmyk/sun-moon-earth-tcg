@@ -156,7 +156,9 @@ export function useFxPlayer(state, myId, speed) {
         const shown = new Set();
         const lethalGroup = !!loser && g.events.some(isLethalHp);
         // 手札からカードを使った（演出は無いが、手札からは先に消す）
-        g.events.filter((ev) => ev.k === "play").forEach((ev) => F.applyPre(work, ev, current.final));
+        const plays = g.events.filter((ev) => ev.k === "play");
+        plays.forEach((ev) => F.applyPre(work, ev, current.final));
+        if (plays.length) show(); // 使った瞬間に、手札とコストの表示を更新する
         if (g.lines.length) {
           const hb = rectOf("header");
           // 帯は、画面上部のパネル（場と同じ中央の列）の真下に、同じ幅で出す

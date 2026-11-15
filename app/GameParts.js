@@ -57,9 +57,6 @@ export function cardStatus(c, p, opts = {}) {
     if (opts.unit.immuneEffectDamage) out.push("交戦以外でダメージを受けない");
     if (!opts.unit.immuneDestroy) out.push("耐性なし（召喚した時の屍が30未満）");
   }
-  if (id === "saturn_replica" && !opts.unit) {
-    out.push(`このターン使ったカード：${played}枚（${E.REPLICA_NEED}枚以上でコスト-${E.REPLICA_OFF}）`);
-  }
   if (c.id === "mercury_gate") out.push(`今の山札：${p.deck.length}枚`);
   if (c.id === "mercury_sonic") out.push(`即時召喚の追加コスト：${E.hasteExtraOf(p)}`);
   return out;
