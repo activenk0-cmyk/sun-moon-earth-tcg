@@ -1,13 +1,14 @@
 "use client";
 
-// チュートリアル（実践式）
-// ① 全体像：本物そっくりの盤面で「どこに何があるか」「1ターンの流れ」を俯瞰する
-// ② 実践　：コーチの指示どおりに操作して、1試合を最後まで遊ぶ（操作のたびに「何が変わったか」を表示）
-// ③ 詳しいルール：見出し（ひとこと要約）→ タップで詳細、の2段構成
+// チュートリアル（ゲーム型・文字は最小限）
+// ・最初に2枚だけ：「ゴール」と「1ターンの流れ」
+// ・あとは本物そっくりの盤面で、指さし＋ひとことの吹き出しどおりにタップするだけ
+// ・操作すると、変わった場所に数字（−2・破壊！など）が飛び出して、自動で次へ進む
+// ・画面の一番上に「ドロー → メイン → 生贄」の流れをずっと表示（今どこかが光る）
 // ※ 本物のエンジン（lib/engine.js）は使わず、このファイルの中だけで動く練習用の盤面
 
 import { useState, useEffect, useRef } from "react";
-import { ManaBar, PhaseBar, EmptySlots, PHASE_LABEL } from "./GameParts";
+import { ManaBar, EmptySlots } from "./GameParts";
 
 /* ============ 練習用の盤面 ============ */
 
@@ -34,14 +35,12 @@ function initialBoard() {
 
 const clone = (b) => JSON.parse(JSON.stringify(b));
 
-// 自分がカードを1枚引く
 function drawOne(me) {
   const c = me.pile.shift();
   if (c) me.hand.push(c);
   me.deck -= 1;
 }
 
-/* ---- 操作（どれも新しい盤面を返す） ---- */
 const ACT = {
   draw(b) {
     const n = clone(b);
@@ -58,14 +57,14 @@ const ACT = {
     n.me.field.push({ ...unit(c.uid, c.name, c.stat, c.faction), sick: true });
     return n;
   },
-  attack(b, uid, targetUid) {
+  attack(b, uid, target) {
     const n = clone(b);
     const a = n.me.field.find((u) => u.uid === uid);
     a.attacked = true;
-    if (targetUid === "face") {
+    if (target === "face") {
       n.opp.hp -= a.stat;
     } else {
-      const t = n.opp.field.find((u) => u.uid === targetUid);
+      const t = n.opp.field.find((u) => u.uid === target);
       const as = a.stat;
       a.stat -= t.stat;
       t.stat -= as;
@@ -91,363 +90,154 @@ const ACT = {
   },
 };
 
-// 相手のターン（自動で進む）：[待ち時間, 盤面の変化, コーチの一言]
+// 相手のターン（自動）：[盤面の変化, ひとこと]
 const OPP_TURN = [
-  [700, (n) => { n.turn = "opp"; n.phase = "draw"; n.opp.hand += 1; n.opp.deck -= 1; n.opp.cost = n.opp.maxCost; },
-    "相手のターン。①ドロー：相手が1枚引いた"],
-  [1300, (n) => { n.phase = "main"; n.opp.hand -= 1; n.opp.cost -= 3; n.opp.field.push({ ...unit("o2", "ゴブリン", 3, "moon"), sick: true }); },
-    "②メイン：相手がゴブリン（3）を召喚"],
-  [1300, (n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 2; },
-    "③生贄：相手がコスト2のカードを生贄に → 相手のHPが2回復"],
-  [1400, (n) => {
+  [(n) => { n.turn = "opp"; n.phase = "draw"; n.opp.hand += 1; n.opp.deck -= 1; }, "相手のドロー"],
+  [(n) => { n.phase = "main"; n.opp.hand -= 1; n.opp.cost -= 3; n.opp.field.push({ ...unit("o2", "ゴブリン", 3, "moon"), sick: true }); }, "相手が召喚"],
+  [(n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 2; }, "相手も生贄でHP回復"],
+  [(n) => {
     n.turn = "me"; n.phase = "draw"; n.turnCount = 2;
     n.me.cost = n.me.maxCost; n.me.sacrificed = false;
     n.me.field.forEach((u) => { u.sick = false; u.attacked = false; });
     n.opp.field.forEach((u) => { u.sick = false; });
-  }, "あなたのターンに戻ってきた"],
+  }, "あなたの番！ コスト全回復"],
 ];
 
-/* ============ 変化の一覧（操作の前と後をくらべる） ============ */
-function diff(a, b) {
-  const out = []; // { key, text }
-  const num = (key, label, x, y) => { if (x !== y) out.push({ key, text: `${label} ${x}→${y}` }); };
-  num("oppHp", "相手HP", a.opp.hp, b.opp.hp);
-  num("meHp", "自分HP", a.me.hp, b.me.hp);
-  if (a.me.cost !== b.me.cost || a.me.maxCost !== b.me.maxCost) {
-    out.push({ key: "meCost", text: `コスト ${a.me.cost}/${a.me.maxCost}→${b.me.cost}/${b.me.maxCost}` });
-  }
-  num("hand", "手札", a.me.hand.length, b.me.hand.length);
-  num("meDeck", "山札", a.me.deck, b.me.deck);
-  num("meSac", "生贄置き場", a.me.sac, b.me.sac);
-  num("oppInfo", "相手の手札", a.opp.hand, b.opp.hand);
+/* ============ 変わった場所に出す数字（−2・破壊！など） ============ */
+function pops(a, b) {
+  const out = {};
+  const sign = (d) => (d > 0 ? `+${d}` : `${d}`);
+  if (a.opp.hp !== b.opp.hp) out.oppHp = sign(b.opp.hp - a.opp.hp);
+  if (a.me.hp !== b.me.hp) out.meHp = sign(b.me.hp - a.me.hp);
+  if (a.me.maxCost !== b.me.maxCost) out.meCost = "上限+1";
+  else if (b.me.cost > a.me.cost && b.me.cost === b.me.maxCost) out.meCost = "全回復";
+  else if (a.me.cost !== b.me.cost) out.meCost = sign(b.me.cost - a.me.cost);
+  if (b.me.hand.length > a.me.hand.length) out.hand = "+1枚";
   for (const side of ["me", "opp"]) {
-    const who = side === "me" ? "" : "相手の";
     for (const u of b[side].field) {
       const p = a[side].field.find((x) => x.uid === u.uid);
-      if (!p) out.push({ key: `u:${u.uid}`, text: `${who}${u.name}が場に出た` });
-      else if (p.stat !== u.stat) out.push({ key: `u:${u.uid}`, text: `${who}${u.name} ${p.stat}→${u.stat}` });
-      else if (p.sick && !u.sick) out.push({ key: `u:${u.uid}`, text: `${who}${u.name}が攻撃できるように` });
+      if (!p) out[`u:${u.uid}`] = "召喚！";
+      else if (p.stat !== u.stat) out[`u:${u.uid}`] = `${p.stat}→${u.stat}`;
     }
     for (const p of a[side].field) {
-      if (!b[side].field.find((x) => x.uid === p.uid)) out.push({ key: `u:${p.uid}`, text: `${who}${p.name}が破壊された` });
+      if (!b[side].field.find((x) => x.uid === p.uid)) out[`u:${p.uid}`] = "破壊！";
     }
   }
   return out;
 }
 
-/* ============ 手順（コーチ） ============ */
-// kind: "next" … 読んで「次へ」 / "action" … 指示どおりに操作する
-// focus: 光らせる場所 / result: 操作したあとに出す説明（変化の一覧と一緒に表示）
-const B = ({ children }) => <b className="text-amber-200">{children}</b>;
-
-// 1ターンの流れの図（全体像で何度も使う）
-function TurnFlow({ now }) {
-  const steps = [
-    ["draw", "①ドロー", "1枚引く"],
-    ["main", "②メイン", "出す・攻撃"],
-    ["sacrifice", "③生贄", "コストを増やす"],
-  ];
-  return (
-    <div className="flex items-stretch gap-1 text-center my-2">
-      {steps.map(([id, t, d]) => (
-        <div key={id} className={`flex-1 rounded-lg border px-1 py-1.5 ${now === id ? "border-amber-300 bg-amber-400/20" : "border-white/15 bg-white/5"}`}>
-          <div className="text-[11px] font-bold text-slate-100">{t}</div>
-          <div className="text-[9px] text-slate-400 leading-tight">{d}</div>
-        </div>
-      ))}
-      <div className="flex items-center text-[10px] text-slate-400 px-0.5">→相手<br />の番</div>
-    </div>
-  );
-}
-
+/* ============ 手順 ============ */
+// hint(sel)：指さしの吹き出し { key, text, below } / focus(sel)：光らせる場所 / toast：操作後のひとこと
 const STEPS = [
-  /* ---------- ① 全体像 ---------- */
   {
-    part: 0, kind: "next", focus: [],
-    title: "このチュートリアルの流れ",
-    body: (
-      <>
-        <div className="space-y-1 my-1">
-          <div>① <B>全体像</B>：画面の見方と、1ターンの流れ（30秒）</div>
-          <div>② <B>実践</B>：指示どおりに操作して、1試合やってみる</div>
-          <div>③ <B>詳しいルール</B>：気になった所だけ読めばOK</div>
-        </div>
-      </>
-    ),
-  },
-  {
-    part: 0, kind: "next", focus: ["oppHp"],
-    title: "ゴールはひとつ",
-    body: <>上の赤い玉が<B>相手のHP</B>。これを<B>0にしたら勝ち</B>です（下の緑の玉が自分のHP）。</>,
-  },
-  {
-    part: 0, kind: "next", focus: ["oppField", "meField"],
-    title: "戦うのは「場」のキャラ",
-    body: <>上が相手の場、下が自分の場。キャラの丸い数字は<B>攻撃力と体力を兼ねた1つの値</B>です。</>,
-  },
-  {
-    part: 0, kind: "next", focus: ["hand", "meCost"],
-    title: "キャラは手札から出す",
-    body: <>手札のカード右上の◆が<B>コスト</B>。紫の◆（コスト）を払って場に出します。</>,
-  },
-  {
-    part: 0, kind: "next", focus: ["phase"],
-    title: "1ターンはいつもこの3ステップ",
-    body: (
-      <>
-        <TurnFlow />
-        自分のターンと相手のターンを<B>交互に繰り返すだけ</B>。全体像はこれで全部です。
-      </>
-    ),
-  },
-  {
-    part: 0, kind: "next", focus: [], nextLabel: "やってみる ▶",
-    title: "では実際にやってみよう",
-    body: <>練習なので、相手のHPは<B>5</B>から（本番はお互い10から）。指示された所が光ります。</>,
-  },
-
-  /* ---------- ② 実践 ---------- */
-  {
-    part: 1, kind: "action", focus: ["controls"], flow: "draw",
-    title: "①ドロー",
-    body: <>ターンの最初は1枚引きます。<B>「カードを引く」</B>をタップ。</>,
     allow: { draw: true },
-    result: <>手札が1枚増え、山札が1枚減りました。フェーズは<B>②メイン</B>へ。</>,
+    hint: () => ({ key: "controls", text: "タップして1枚引く" }),
+    focus: () => ["controls"],
   },
   {
-    part: 1, kind: "action", focus: ["card:h1"], flow: "main",
-    title: "②メイン：キャラを出す",
-    body: <>コスト2の<B>「騎士見習い」</B>をタップして場に出そう（今のコストは2）。</>,
     allow: { play: ["h1"] },
-    result: (
-      <>
-        コストを2払って場に出ました。頭の★は<B>召喚酔い</B>：出したターンは攻撃できません。
-        <div className="text-[10px] text-slate-400 mt-1">※本番はカードをタップ→「召喚」ボタン</div>
-      </>
-    ),
+    hint: () => ({ key: "hand", text: "騎士見習いを出そう" }),
+    focus: () => ["card:h1"],
+    toast: "出したターンはお休み（★）",
   },
   {
-    part: 1, kind: "action", focus: ["u:u1", "u:o1"], flow: "main",
-    title: "②メイン：キャラで攻撃",
-    body: (sel) => sel
-      ? <>次に、攻撃する相手の<B>「スライム」（2）</B>をタップ。</>
-      : <>前のターンから場にいる<B>「戦士」（3）</B>をタップして選ぼう。</>,
     allow: { select: ["u1"], target: ["o1"] },
-    result: (
-      <>
-        キャラ同士は<B>お互いの数字ぶん削り合い</B>ます。戦士 3−2＝<B>1</B>で生き残り、スライムは 2−3 で0以下→<B>破壊</B>。
-        減った数字は回復しません。
-      </>
-    ),
+    hint: (sel) => (sel ? { key: "oppField", text: "スライムを攻撃！", below: true } : { key: "u:u1", text: "戦士をタップ" }),
+    focus: (sel) => (sel ? ["u:o1"] : ["u:u1"]),
+    toast: "数字どうしで削り合う",
   },
   {
-    part: 1, kind: "action", focus: ["u:u2", "face"], flow: "main",
-    title: "②メイン：相手に直接攻撃",
-    body: (sel) => sel
-      ? <>出てきた<B>「ダイレクト」</B>ボタンをタップ。</>
-      : <><B>「弓兵」（2）</B>を選んで、今度は相手プレイヤーを狙おう。</>,
     allow: { select: ["u2"], target: ["face"] },
-    result: <>相手HPが<B>2減りました</B>（5→3）。ダイレクトでは攻撃した側はダメージを受けません。</>,
+    hint: (sel) => (sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "u:u2", text: "弓兵をタップ" }),
+    focus: (sel) => (sel ? ["face"] : ["u:u2"]),
+    toast: "相手のHPに直接ダメージ",
   },
   {
-    part: 1, kind: "action", focus: ["controls"], flow: "main",
-    title: "②メイン：おしまい",
-    body: <>やることは終わったので<B>「メインフェーズ終了」</B>をタップ。</>,
     allow: { toSac: true },
-    result: <>フェーズは<B>③生贄</B>へ。</>,
+    hint: () => ({ key: "controls", text: "メインはおしまい" }),
+    focus: () => ["controls"],
   },
   {
-    part: 1, kind: "action", focus: ["card:h2"], flow: "sacrifice",
-    title: "③生贄：コストを増やす",
-    body: <>今は重くて出せない<B>「大剣士」（5）</B>をタップして生贄にしよう。</>,
     allow: { sac: ["h2"] },
-    result: (
-      <>
-        生贄の効果は3つ：<B>コスト上限+1</B>・<B>1枚引く</B>・<B>そのカードのコストぶんHP回復</B>（+5）。
-        1ターンに1回まで。こうしてコストを伸ばしていきます。
-      </>
-    ),
+    hint: () => ({ key: "hand", text: "使わないカードを生贄に" }),
+    focus: () => ["card:h2"],
+    toast: "生贄でパワーアップ！",
   },
   {
-    part: 1, kind: "action", focus: ["controls"], flow: "sacrifice",
-    title: "ターン終了",
-    body: <><B>「ターン終了」</B>をタップ。相手のターンが自動で進みます。</>,
     allow: { end: true },
-    result: (
-      <>
-        相手も<B>同じ3ステップ</B>でした。あなたの2ターン目：コストは<B>3/3に全回復</B>（上限は生贄で増えた分）、
-        騎士見習いの★も消えて攻撃できます。
-      </>
-    ),
+    hint: () => ({ key: "controls", text: "ターン終了" }),
+    focus: () => ["controls"],
   },
   {
-    part: 1, kind: "action", focus: ["controls"], flow: "draw",
-    title: "2ターン目：①ドロー",
-    body: <>流れは毎ターン同じ。まずは<B>「カードを引く」</B>。</>,
     allow: { draw: true },
-    result: null, // そのまま次へ
+    hint: () => ({ key: "controls", text: "また1枚引く" }),
+    focus: () => ["controls"],
   },
   {
-    part: 1, kind: "action", focus: ["meField", "face"], flow: "main",
-    title: "とどめを刺そう",
-    body: (sel, b) => (
-      <>
-        相手HPは<B>{b.opp.hp}</B>。攻撃できるキャラの数字の合計は 1＋2＋2＝<B>5</B>…ちょうど倒せる！
-        {sel ? <>「ダイレクト」をタップ。</> : <>光っているキャラを選んでダイレクトしよう。</>}
-      </>
-    ),
     allow: { select: ["u1", "u2", "h1"], target: ["face"] },
+    hint: (sel) => (sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "meField", text: "全員で攻撃！" }),
+    focus: (sel) => (sel ? ["face"] : ["meField", "oppHp"]),
     done: (b) => b.opp.hp <= 0,
-    result: <>相手HPが<B>0</B>になりました。<B>あなたの勝ち！</B></>,
-  },
-  {
-    part: 1, kind: "next", focus: [], nextLabel: "詳しいルールへ ▶",
-    title: "🎉 クリア！",
-    body: (
-      <>
-        これで1試合の流れは全部です。
-        <TurnFlow />
-        あとはカードごとの効果や細かいルールだけ。次の画面で、気になる所だけ読んでください。
-      </>
-    ),
   },
 ];
 
-/* ============ ③ 詳しいルール（見出し＝ひとこと要約 → タップで詳細） ============ */
-const DETAILS = [
-  {
-    title: "勝ち負け",
-    summary: "相手HP0で勝ち。山札切れでも負け",
-    items: [
-      <>お互いのHPは<B>10</B>からスタート。HPは10を超えて増やせます（上限なし）。</>,
-      <><B>山札の最後の1枚を引いた瞬間</B>にも負けになります。</>,
-      <>お互いが同時に負け条件を満たした時は、<B>そのターンのプレイヤーの勝ち</B>。</>,
-      <>一部のカードには、HP0以外で勝てる<B>特殊勝利</B>の効果もあります。</>,
-    ],
-  },
-  {
-    title: "デッキと手札",
-    summary: "10枠から1種類ずつ選ぶ → 各4枚で40枚",
-    items: [
-      <>デッキは<B>10個の枠</B>から1種類ずつ選ぶだけ。選んだカードが<B>4枚ずつ</B>入り、40枚になります。</>,
-      <>枠の数字はそのカードの<B>コスト</B>。キャラクターのほか、使い切りの<B>マジック</B>、リーダーに付ける<B>アビリティ</B>があります。</>,
-      <>陣営は<B>自由に混ぜてOK</B>。迷ったら「おすすめデッキ」から。</>,
-      <>最初の手札は<B>5枚</B>（引き直しなし）。手札は<B>最大10枚</B>で、あふれた分は墓地へ。</>,
-    ],
-  },
-  {
-    title: "先攻・後攻",
-    summary: "先攻は1ターン目ドローなし、後攻はボーナスあり",
-    items: [
-      <>先攻は<B>1ターン目だけドローできません</B>。</>,
-      <>後攻には<B>「後攻ボーナス」</B>が付きます：自分のターン終了時、手札からランダムに3枚のコストが-1（2ターンで外れる）。</>,
-    ],
-  },
-  {
-    title: "コスト",
-    summary: "1から最大10。毎ターン全回復",
-    items: [
-      <>コストは<B>1</B>から始まり、生贄で<B>最大10</B>まで増えます。</>,
-      <>使ったコストは<B>毎ターン全回復</B>。足りる限り何枚でもカードを使えます。</>,
-      <>自分の場に出せるキャラは<B>最大5体</B>。</>,
-    ],
-  },
-  {
-    title: "生贄",
-    summary: "1ターン1回：上限+1・1枚引く・HP回復",
-    items: [
-      <>ターンの最後に<B>手札を1枚</B>生贄にできます（しなくてもOK）。</>,
-      <>効果は<B>コスト上限+1・1枚ドロー・そのカードのコストぶんHP回復</B>。重いカードほど大きく回復。</>,
-      <>生贄にしたカードは「生贄置き場」へ（墓地とは別。基本的に戻らない）。</>,
-      <>生贄は「破壊」ではないので<B>破壊トリガーは発動しません</B>。上限が10になったら生贄できません。</>,
-    ],
-  },
-  {
-    title: "攻撃",
-    summary: "1体1ターン1回。出したターンは攻撃できない",
-    items: [
-      <>各キャラは<B>1ターンに1回</B>攻撃できます。狙えるのは相手のキャラか相手プレイヤー（<B>ダイレクト</B>）。</>,
-      <>出したターンは攻撃できません（<B>召喚酔い</B>）。召喚時に<B>+4コスト</B>払えば、そのターンからすぐ攻撃できます。</>,
-      <>交戦では<B>お互いに相手の数字ぶん</B>ダメージ。0以下で破壊。減った数字は戻りません。</>,
-    ],
-  },
-  {
-    title: "キーワード",
-    summary: "守・速・闘・隠 などのマーク",
-    items: [
-      <><B>守 ディフェンダー</B>：相手の場にいると、<B>ディフェンダーにしか攻撃できない</B>。</>,
-      <><B>速 ファストアタック</B>：出したターンから攻撃できる（ダイレクトも可）。</>,
-      <><B>闘 ファストファイト</B>：出したターンから相手のキャラに攻撃できる（そのターンはダイレクト不可）。</>,
-      <><B>隠 ステルス</B>：相手のキャラから攻撃されない。<B>直✕</B>：ダイレクト不可。</>,
-    ],
-  },
-  {
-    title: "効果が発動するタイミング",
-    summary: "召喚・攻撃・交戦・破壊トリガーなど",
-    items: [
-      <><B>召喚トリガー</B>：召喚した時 ／ <B>破壊トリガー</B>：破壊された時 ／ <B>装着トリガー</B>：アビリティを装着した時。</>,
-      <><B>攻撃トリガー</B>：攻撃を宣言した時（交戦の前）。</>,
-      <><B>交戦トリガー</B>：交戦する直前（攻撃した時・された時の両方）。これで相手がいなくなったら交戦しない。</>,
-      <><B>在場効果</B>：場にいる間ずっと有効。同時に発動する効果は<B>ターン主の効果が先</B>。</>,
-    ],
-  },
-  {
-    title: "墓地・屍・消滅",
-    summary: "屍＝墓地のカードのコスト合計",
-    items: [
-      <>「<B>屍N</B>」は、自分の墓地にあるカードの元のコストの合計がN以上なら発動。今の屍は「墓地」の横に表示。</>,
-      <>「<B>消滅</B>」したカードは墓地に行かず、破壊トリガーも発動しません。</>,
-      <>カードの効果は、カードをタップ（場のキャラは右上の <B>i</B>）でいつでも確認できます。</>,
-    ],
-  },
-];
+/* ============ 光らせる・暗くする ============ */
+const CONTAINERS = {
+  oppPanel: (k) => k === "oppHp",
+  oppField: (k) => k.startsWith("u:o"),
+  face: () => false,
+  meField: (k) => k.startsWith("u:u") || k.startsWith("u:h"),
+  mePanel: (k) => k === "meHp" || k === "meCost",
+  hand: (k) => k.startsWith("card:"),
+  controls: () => false,
+};
+const parentOf = (k) => Object.keys(CONTAINERS).find((c) => CONTAINERS[c](k));
 
-function DetailsView({ onReplay, onClose }) {
-  const [open, setOpen] = useState(null);
+function zoneClass(key, focus) {
+  if (!focus.length) return "";
+  if (focus.includes(key)) return "tut-focus";
+  if (CONTAINERS[key]) return focus.some((k) => CONTAINERS[key](k)) ? "" : "tut-dim";
+  const p = parentOf(key);
+  if (p && !focus.includes(p) && focus.some((k) => k !== key && CONTAINERS[p](k))) return "tut-dim";
+  return "";
+}
+
+/* ============ 部品 ============ */
+
+// 光る・指さし・飛び出す数字をまとめて付ける枠
+function Spot({ k, ui, className = "", children }) {
+  const pop = ui.pops[k];
   return (
-    <div className="max-w-lg mx-auto px-4 pt-4 pb-10 text-sm">
-      <div className="flex items-center justify-between mb-1">
-        <div className="sme-heading text-lg">詳しいルール</div>
-        <button onClick={onClose} className="px-2 text-xl leading-none text-slate-300">×</button>
-      </div>
-      <div className="text-[11px] text-slate-400 mb-3">見出しだけ読めば全体がわかります。気になる所をタップ。</div>
-      <div className="space-y-1.5">
-        {DETAILS.map((d, i) => (
-          <div key={d.title} className="sme-panel overflow-hidden">
-            <button
-              onClick={() => setOpen(open === i ? null : i)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-left"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-bold text-slate-100">{d.title}</div>
-                <div className="text-[11px] text-amber-200/90">{d.summary}</div>
-              </div>
-              <span className="text-slate-400 text-xs">{open === i ? "▲" : "▼"}</span>
-            </button>
-            {open === i && (
-              <ul className="px-3 pb-3 space-y-1.5 text-xs text-slate-200">
-                {d.items.map((t, k) => (
-                  <li key={k} className="flex gap-1.5 leading-relaxed">
-                    <span className="text-amber-300">●</span>
-                    <span>{t}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-5">
-        <button onClick={onReplay} className="sme-btn sme-btn-ghost sme-btn-sm">もう一度練習</button>
-        <button onClick={onClose} className="sme-btn sme-btn-sun sme-btn-sm">閉じる</button>
-      </div>
+    <div data-tut={k} className={`relative ${className} ${zoneClass(k, ui.focus)}`}>
+      {children}
+      {ui.hint && ui.hint.key === k && (
+        <div className={`tut-hint ${ui.hint.below ? "below" : ""}`}>
+          {ui.hint.below ? "👆 " : ""}{ui.hint.text}{ui.hint.below ? "" : " 👇"}
+        </div>
+      )}
+      {pop && <div key={`${ui.popN}-${k}`} className={`tut-pop ${pop.startsWith("-") || pop === "破壊！" ? "bad" : ""}`}>{pop}</div>}
     </div>
   );
 }
 
-/* ============ 練習用の盤面の表示（本番の対戦画面と同じ見た目） ============ */
+// 一番上の「流れ」の帯
+function FlowBar({ b }) {
+  const mine = b.turn === "me";
+  const steps = [["draw", "ドロー"], ["main", "メイン"], ["sacrifice", "生贄"]];
+  return (
+    <div className={`tut-flow ${mine ? "mine" : "theirs"}`}>
+      <span className="who">{mine ? "あなた" : "相手"}</span>
+      {steps.map(([id, t], i) => (
+        <span key={id} className="flex items-center">
+          <span className={`step ${b.phase === id ? "on" : ""}`}>{t}</span>
+          {i < 2 && <span className="arrow">›</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
 
-function TutUnit({ u, foe, ready, selected, target, ghost, onTap }) {
+function TutUnit({ u, foe, ready, selected, target, onTap }) {
   const statCls = u.stat > u.base ? "is-up" : u.stat < u.base ? "is-down" : "";
   let look = "";
   if (selected) look = "is-selected";
@@ -456,139 +246,120 @@ function TutUnit({ u, foe, ready, selected, target, ghost, onTap }) {
   const cls = ["unit", `fx-${u.faction}`, foe ? "is-foe" : "", look, u.attacked ? "is-attacked" : "", u.sick ? "opacity-60 grayscale" : ""]
     .filter(Boolean).join(" ");
   return (
-    <div className={`relative ${ghost ? "tut-ghost" : "unit-enter"}`}>
+    <div className="unit-enter">
       <button onClick={onTap} className={cls}>
-        {u.sick && !ghost && (
-          <span className="dizzy" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span>
-        )}
+        {u.sick && <span className="dizzy" aria-hidden="true"><span>★</span><span>★</span><span>★</span></span>}
         <div className="unit-name">{u.name}</div>
         <div className="flex justify-between items-end mt-1">
-          <span key={`s-${u.stat}`} className={`unit-stat ${statCls}`}>{ghost ? 0 : u.stat}</span>
+          <span key={`s-${u.stat}`} className={`unit-stat ${statCls}`}>{u.stat}</span>
         </div>
       </button>
-      {ghost && <div className="tut-ghost-label">破壊</div>}
     </div>
   );
 }
 
-function Board({ b, ghosts, z, sel, allow, interactive, onAct }) {
+/* ============ 盤面 ============ */
+function Board({ b, ui, sel, allow, interactive, onAct }) {
   const isMine = b.turn === "me";
   const ok = (list, id) => interactive && !!list && list.includes(id);
   const canSelect = (u) => ok(allow.select, u.uid) && !u.attacked && !u.sick;
   const faceOk = sel && ok(allow.target, "face");
+  const btn = (on) => `sme-btn !py-2.5 ${on ? "sme-glow" : "opacity-50"}`;
 
   return (
-    <main className="max-w-lg mx-auto text-sm">
-      {/* 相手情報 */}
-      <div className={`sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2 ${z("oppPanel")}`}>
+    <div className="max-w-lg mx-auto text-sm">
+      {/* 相手 */}
+      <Spot k="oppPanel" ui={ui} className="sme-panel sme-panel-opp !rounded-none !border-x-0 !border-t-0 px-3 py-2">
         <div className="flex items-center gap-3">
-          <div data-tut="oppHp" className={`rounded-full ${z("oppHp")}`}>
+          <Spot k="oppHp" ui={ui} className="rounded-full">
             <div key={`ohp-${b.opp.hp}`} className={`hp-orb opp ${b.opp.hp <= 3 ? "is-danger" : ""}`}>{Math.max(0, b.opp.hp)}</div>
-          </div>
-          <div data-tut="oppInfo" className={`flex-1 min-w-0 rounded ${z("oppInfo")}`}>
+          </Spot>
+          <div className="flex-1 min-w-0">
             <div className="flex justify-between items-center">
-              <span className="text-xs font-bold text-rose-200">相手（練習用）</span>
+              <span className="text-xs font-bold text-rose-200">相手</span>
               <span className="text-[11px] font-bold text-indigo-200">コスト {b.opp.cost}/{b.opp.maxCost}</span>
             </div>
             <div className="mt-0.5"><ManaBar cost={b.opp.cost} max={b.opp.maxCost} /></div>
-            <div className="text-[11px] text-slate-300 mt-0.5">
-              手札 {b.opp.hand} ・ 山 {b.opp.deck} ・ 生贄 {b.opp.sac}
-            </div>
           </div>
         </div>
-      </div>
-      <div className={`turn-strip ${isMine ? "mine" : "theirs"}`}>
-        TURN {b.turnCount}｜{isMine ? "あなた" : "相手"}の{PHASE_LABEL[b.phase]}フェーズ
-      </div>
+      </Spot>
 
-      {/* 相手の場 */}
-      <div data-tut="oppField" className={`mx-1 mt-1 px-1 py-1 rounded-lg ${z("oppField")}`}>
-        <div className="sme-label mb-0.5">相手の場</div>
+      <Spot k="oppField" ui={ui} className="mx-1 mt-2 px-1 py-1 rounded-lg">
         <div className="flex gap-1 flex-wrap justify-center">
           {b.opp.field.map((u) => (
-            <div key={u.uid} className={`rounded-xl ${z(`u:${u.uid}`)}`}>
+            <Spot key={u.uid} k={`u:${u.uid}`} ui={ui} className="rounded-xl">
               <TutUnit
                 u={u} foe
                 target={sel && ok(allow.target, u.uid)}
                 onTap={() => sel && ok(allow.target, u.uid) && onAct({ type: "attack", uid: sel, target: u.uid })}
               />
-            </div>
+            </Spot>
           ))}
-          {ghosts.opp.map((u) => <TutUnit key={`g-${u.uid}`} u={u} foe ghost />)}
-          <EmptySlots count={5 - b.opp.field.length - ghosts.opp.length} />
+          {ui.ghosts.opp.map((u) => (
+            <Spot key={`g-${u.uid}`} k={`u:${u.uid}`} ui={ui} className="tut-ghost"><TutUnit u={{ ...u, stat: 0 }} foe /></Spot>
+          ))}
+          <EmptySlots count={5 - b.opp.field.length - ui.ghosts.opp.length} />
         </div>
-      </div>
+      </Spot>
 
       {/* ダイレクト */}
-      <div data-tut="face" className={`mx-2 my-1 rounded-lg ${z("face")}`}>
-        {faceOk ? (
+      <Spot k="face" ui={ui} className="mx-2 my-2 rounded-lg min-h-[36px]">
+        {faceOk && (
           <button onClick={() => onAct({ type: "attack", uid: sel, target: "face" })} className="sme-btn sme-btn-danger sme-btn-sm sme-glow">
-            ⚔ 相手プレイヤーにダイレクト
+            ⚔ ダイレクト
           </button>
-        ) : interactive && allow.target && allow.target.includes("face") ? (
-          <div className="sme-panel py-1.5 text-center text-[11px] text-slate-400">キャラを選ぶと、ここに「ダイレクト」ボタンが出ます</div>
-        ) : (
-          <div className="h-1" />
         )}
-      </div>
+      </Spot>
 
       {/* 自分の場 */}
-      <div data-tut="meField" className={`mx-1 px-1 pt-1 pb-3 rounded-lg ${z("meField")}`}>
-        <div className="sme-label mb-0.5">自分の場</div>
+      <Spot k="meField" ui={ui} className="mx-1 px-1 pt-1 pb-2 rounded-lg">
         <div className="flex gap-1 flex-wrap justify-center">
           {b.me.field.map((u) => (
-            <div key={u.uid} className={`rounded-xl ${z(`u:${u.uid}`)}`}>
+            <Spot key={u.uid} k={`u:${u.uid}`} ui={ui} className="rounded-xl">
               <TutUnit
                 u={u}
                 ready={canSelect(u)}
                 selected={sel === u.uid}
                 onTap={() => canSelect(u) && onAct({ type: "select", uid: u.uid })}
               />
-            </div>
+            </Spot>
           ))}
-          {ghosts.me.map((u) => <TutUnit key={`g-${u.uid}`} u={u} ghost />)}
-          <EmptySlots count={5 - b.me.field.length - ghosts.me.length} />
+          {ui.ghosts.me.map((u) => (
+            <Spot key={`g-${u.uid}`} k={`u:${u.uid}`} ui={ui} className="tut-ghost"><TutUnit u={{ ...u, stat: 0 }} /></Spot>
+          ))}
+          <EmptySlots count={5 - b.me.field.length - ui.ghosts.me.length} />
         </div>
-      </div>
+      </Spot>
 
-      {/* 自分情報 */}
-      <div className={`sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2 ${z("mePanel")}`}>
+      {/* 自分 */}
+      <Spot k="mePanel" ui={ui} className="sme-panel sme-panel-me !rounded-none !border-x-0 px-3 py-2">
         <div className="flex items-center gap-3">
-          <div data-tut="meHp" className={`rounded-full ${z("meHp")}`}>
+          <Spot k="meHp" ui={ui} className="rounded-full">
             <div key={`mhp-${b.me.hp}`} className="hp-orb me">{b.me.hp}</div>
-          </div>
-          <div className="flex-1 min-w-0">
+          </Spot>
+          <Spot k="meCost" ui={ui} className="flex-1 min-w-0 rounded px-0.5">
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-200">あなた</span>
+              <span className="text-[11px] font-bold text-indigo-200">コスト {b.me.cost}/{b.me.maxCost}</span>
             </div>
-            <div data-tut="meCost" className={`mt-0.5 rounded px-0.5 ${z("meCost")}`}>
-              <div className="text-[11px] font-bold text-indigo-200">コスト {b.me.cost}/{b.me.maxCost}</div>
-              <ManaBar cost={b.me.cost} max={b.me.maxCost} />
-            </div>
-            <div className="text-[11px] text-slate-300 mt-0.5">
-              <span data-tut="meDeck" className={`rounded px-0.5 ${z("meDeck")}`}>山 {b.me.deck}</span> ・{" "}
-              <span data-tut="meSac" className={`rounded px-0.5 ${z("meSac")}`}>生贄 {b.me.sac}</span>
-            </div>
-          </div>
+            <ManaBar cost={b.me.cost} max={b.me.maxCost} />
+          </Spot>
         </div>
-      </div>
+      </Spot>
 
       {/* 手札 */}
-      <div data-tut="hand" className={`mx-1 px-1 pt-1 rounded-lg ${z("hand")}`}>
-        <div className="sme-label">手札 ({b.me.hand.length})</div>
+      <Spot k="hand" ui={ui} className="mx-1 mt-8 px-1 rounded-lg">
         <div className="flex gap-2 overflow-x-auto pt-2 pb-2 px-1">
           {b.me.hand.map((h) => {
             const canPlay = ok(allow.play, h.uid) && b.phase === "main" && h.cost <= b.me.cost;
             const canSac = ok(allow.sac, h.uid) && b.phase === "sacrifice";
-            const look = canPlay || canSac ? "is-playable" : "is-dim";
             return (
-              <div key={h.uid} data-tut={`card:${h.uid}`} className={`hand-enter shrink-0 rounded-xl ${z(`card:${h.uid}`)}`}>
+              <div key={h.uid} className={`hand-enter shrink-0 rounded-xl ${zoneClass(`card:${h.uid}`, ui.focus)}`}>
                 <button
                   onClick={() => (canPlay ? onAct({ type: "play", uid: h.uid }) : canSac && onAct({ type: "sac", uid: h.uid }))}
-                  className={`hand-card fx-${h.faction} ${look}`}
+                  className={`hand-card fx-${h.faction} ${canPlay || canSac ? "is-playable" : "is-dim"}`}
                 >
-                  <div className="flex justify-between items-start">
-                    <span className="text-[9px] font-bold fx-text">練習</span>
+                  <div className="flex justify-end">
                     <span className="cost-gem"><span>{h.cost}</span></span>
                   </div>
                   <div className="text-[11px] font-bold leading-tight mt-1 text-white">{h.name}</div>
@@ -598,306 +369,257 @@ function Board({ b, ghosts, z, sel, allow, interactive, onAct }) {
             );
           })}
         </div>
-      </div>
+      </Spot>
 
-      {/* 操作 */}
-      <div data-tut="controls" className={`mx-1 px-2 pb-2 pt-1 rounded-lg ${z("controls")}`}>
-        <div data-tut="phase" className={`rounded-lg ${z("phase")}`}>
-          <PhaseBar phase={b.phase} mine={isMine} />
-        </div>
-        {!isMine && (
-          <div className="sme-panel py-2 px-3 text-xs text-center text-slate-300 animate-pulse">相手のターン中…</div>
-        )}
+      {/* ボタン */}
+      <Spot k="controls" ui={ui} className="mx-1 mt-8 px-2 pb-2 pt-1 rounded-lg">
+        {!isMine && <div className="sme-panel py-2.5 text-xs text-center text-slate-300">相手のターン…</div>}
         {isMine && b.phase === "draw" && (
-          <button
-            disabled={!interactive || !allow.draw}
-            onClick={() => onAct({ type: "draw" })}
-            className={`sme-btn sme-btn-sun !py-2.5 ${interactive && allow.draw ? "sme-glow" : "opacity-60"}`}
-          >
-            カードを引く（山札 {b.me.deck}枚）
+          <button disabled={!interactive || !allow.draw} onClick={() => onAct({ type: "draw" })} className={`${btn(interactive && allow.draw)} sme-btn-sun`}>
+            カードを引く
           </button>
         )}
         {isMine && b.phase === "main" && (
-          <button
-            disabled={!interactive || !allow.toSac}
-            onClick={() => onAct({ type: "toSac" })}
-            className={`sme-btn sme-btn-sun !py-2.5 ${interactive && allow.toSac ? "sme-glow" : "opacity-60"}`}
-          >
-            メインフェーズ終了 → 生贄フェーズへ
+          <button disabled={!interactive || !allow.toSac} onClick={() => onAct({ type: "toSac" })} className={`${btn(interactive && allow.toSac)} sme-btn-sun`}>
+            メイン終了 → 生贄へ
           </button>
         )}
         {isMine && b.phase === "sacrifice" && (
-          <>
-            <div className="text-[11px] text-slate-400 mb-1 text-center">
-              {b.me.sacrificed ? "このターンは生贄済みです" : "手札をタップして生贄にできます（任意・1回まで）"}
-            </div>
-            <button
-              disabled={!interactive || !allow.end}
-              onClick={() => onAct({ type: "end" })}
-              className={`sme-btn sme-btn-moon !py-2.5 ${interactive && allow.end ? "sme-glow" : "opacity-60"}`}
-            >
-              {b.me.sacrificed ? "ターン終了" : "生贄せずにターン終了"}
-            </button>
-          </>
+          <button disabled={!interactive || !allow.end} onClick={() => onAct({ type: "end" })} className={`${btn(interactive && allow.end)} sme-btn-moon`}>
+            ターン終了
+          </button>
         )}
-      </div>
-    </main>
+      </Spot>
+    </div>
   );
 }
 
-/* ============ コーチ（画面下の説明） ============ */
-const PARTS = ["全体像", "実践", "詳しいルール"];
-
-function Coach({ step, idx, sel, b, changes, oppMsg, showResult, onNext, onSkip, onClose }) {
-  const body = typeof step.body === "function" ? step.body(sel, b) : step.body;
-  const practiceSteps = STEPS.filter((s) => s.part === step.part);
-  const pos = practiceSteps.indexOf(step) + 1;
+/* ============ 最初の2枚（タップで進む） ============ */
+function Intro({ page, onNext }) {
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-[55] pointer-events-none">
-      <div className="max-w-lg mx-auto p-2 pointer-events-auto">
-        <div className="tut-coach rounded-2xl p-3 text-xs text-slate-200">
-          {/* 今どこにいるか（チュートリアル全体の地図） */}
-          <div className="flex items-center gap-1 mb-2">
-            {PARTS.map((p, i) => (
-              <div
-                key={p}
-                className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                  i === step.part ? "bg-amber-400 text-slate-900 border-amber-300 font-bold" : i < step.part ? "border-amber-400/50 text-amber-200" : "border-white/20 text-slate-400"
-                }`}
-              >
-                {i + 1}.{p}
-              </div>
-            ))}
-            <span className="flex-1" />
-            <span className="text-[10px] text-slate-400">{pos}/{practiceSteps.length}</span>
-            <button onClick={onClose} className="pl-2 text-lg leading-none text-slate-300">×</button>
-          </div>
-
-          {/* 相手のターン中 */}
-          {oppMsg ? (
-            <>
-              <div className="text-sm font-bold text-indigo-200 mb-1">相手のターン</div>
-              {step.flow && <TurnFlow now={b.phase} />}
-              <div className="leading-relaxed">{oppMsg}</div>
-            </>
-          ) : showResult ? (
-            <>
-              <div className="text-sm font-bold text-emerald-300 mb-1">✔ {step.title}</div>
-              {changes.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-1.5">
-                  {changes.map((c, i) => (
-                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-100 font-bold">
-                      {c.text}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="leading-relaxed">{step.result}</div>
-              <button onClick={onNext} className="sme-btn sme-btn-moon sme-btn-sm mt-2">次へ ▶</button>
-            </>
-          ) : (
-            <>
-              <div className="text-sm font-bold text-amber-200 mb-1">{step.title}</div>
-              {step.flow && <TurnFlow now={step.flow} />}
-              <div className="leading-relaxed">{body}</div>
-              {/* とどめの途中経過 */}
-              {step.kind === "action" && changes.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1.5">
-                  {changes.map((c, i) => (
-                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-100 font-bold">
-                      {c.text}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {step.kind === "next" && (
-                <div className="flex gap-2 mt-2">
-                  {idx === 0 && (
-                    <button onClick={onSkip} className="sme-btn sme-btn-ghost sme-btn-sm">ルールだけ読む</button>
-                  )}
-                  <button onClick={onNext} className="sme-btn sme-btn-sun sme-btn-sm">{step.nextLabel || "次へ ▶"}</button>
-                </div>
-              )}
-            </>
-          )}
+    <div onClick={onNext} className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/85 px-6 text-center cursor-pointer">
+      {page === 0 ? (
+        <div key="p0" className="tut-intro">
+          <div className="hp-orb opp mx-auto !text-3xl !min-w-[80px] !h-[80px]">0</div>
+          <div className="mt-5 text-2xl font-black text-white">相手のHPを<br /><span className="text-rose-300">0</span>にしたら勝ち</div>
         </div>
+      ) : (
+        <div key="p1" className="tut-intro w-full max-w-xs">
+          <div className="text-sm font-bold text-slate-300 mb-3">1ターンはこれだけ</div>
+          {[["ドロー", "1枚引く"], ["メイン", "出す・攻撃"], ["生贄", "パワーアップ"]].map(([t, d], i) => (
+            <div key={t}>
+              <div className="rounded-xl border-2 border-amber-300/80 bg-amber-400/15 py-2.5">
+                <div className="text-xl font-black text-amber-200">{t}</div>
+                <div className="text-xs text-slate-300">{d}</div>
+              </div>
+              {i < 2 && <div className="text-amber-300 text-lg leading-6">▼</div>}
+            </div>
+          ))}
+          <div className="mt-3 text-sm font-bold text-slate-200">↻ 相手と交互にくり返す</div>
+        </div>
+      )}
+      <div className="absolute bottom-10 text-xs text-slate-400 animate-pulse">タップで次へ</div>
+    </div>
+  );
+}
+
+/* ============ クリア画面 ============ */
+function Clear({ onDetails, onReplay, onClose }) {
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/85 px-6 text-center">
+      <div className="tut-intro">
+        <div className="text-5xl font-black text-amber-300 tut-win">WIN!</div>
+        <div className="mt-3 text-lg font-bold text-white">これで遊べます！</div>
+        <div className="mt-1 text-xs text-slate-400">カードの効果はタップで確認できます</div>
+      </div>
+      <div className="mt-8 w-full max-w-xs space-y-2">
+        <button onClick={onClose} className="sme-btn sme-btn-sun">閉じる</button>
+        <button onClick={onDetails} className="sme-btn sme-btn-ghost sme-btn-sm">もっと詳しいルール</button>
+        <button onClick={onReplay} className="sme-btn sme-btn-ghost sme-btn-sm">もう一度</button>
       </div>
     </div>
   );
 }
 
-/* ============ 光らせる・暗くする ============ */
-// 大きな枠（container）と、その中の部品（leaf）
-const CONTAINERS = {
-  oppPanel: (k) => k === "oppHp" || k === "oppInfo",
-  oppField: (k) => k.startsWith("u:o"),
-  face: () => false,
-  meField: (k) => k.startsWith("u:u") || k.startsWith("u:h"),
-  mePanel: (k) => ["meHp", "meCost", "meDeck", "meSac"].includes(k),
-  hand: (k) => k.startsWith("card:"),
-  controls: (k) => k === "phase",
-};
-const parentOf = (k) => Object.keys(CONTAINERS).find((c) => CONTAINERS[c](k));
+/* ============ もっと詳しいルール（見出しだけでわかる → タップで中身） ============ */
+const DETAILS = [
+  ["勝ち負け", "相手HP0で勝ち", ["山札の最後の1枚を引いたら負け。", "同時に負けたら、そのターンの人の勝ち。", "HPは10を超えて増やせる。"]],
+  ["デッキ", "10種類 × 4枚 = 40枚", ["10個の枠から1枚ずつ選ぶと、4枚ずつ入る。", "陣営は混ぜてOK。迷ったらおすすめデッキ。", "最初の手札は5枚。手札は10枚まで。"]],
+  ["先攻・後攻", "後攻はちょっと有利", ["先攻は最初のターンだけドローなし。", "後攻は最初のターンの終わりに、手札3枚のコストが1下がる。"]],
+  ["コスト", "毎ターン全回復", ["最初は1、生贄で増えて最大10。", "場に出せるキャラは5体まで。"]],
+  ["生贄", "1ターン1回", ["コスト上限+1・1枚引く・カードのコスト分HP回復。", "しなくてもOK。上限10になったらできない。"]],
+  ["攻撃", "1体につき1ターン1回", ["出したターンは攻撃できない（+4コストで即攻撃）。", "減った数字は元に戻らない。"]],
+  ["マーク", "キャラの右下のマーク", ["守：相手はこのキャラしか攻撃できない", "速：出したターンから攻撃できる", "闘：出したターンからキャラを攻撃できる", "隠：相手のキャラから攻撃されない"]],
+];
 
-function zoneClass(key, focus, flash) {
-  if (!focus.length) return "";
-  if (focus.includes(key)) return flash ? "tut-flash" : "tut-focus";
-  if (CONTAINERS[key]) {
-    // 中の部品が光っている枠は暗くしない（部品の方を目立たせる）
-    return focus.some((k) => CONTAINERS[key](k)) ? "" : "tut-dim";
-  }
-  // 部品：同じ枠の中で別の部品が光っていたら、自分は暗くする
-  const p = parentOf(key);
-  if (p && !focus.includes(p) && focus.some((k) => k !== key && CONTAINERS[p](k))) return "tut-dim";
-  return "";
+function DetailsView({ onBack }) {
+  const [open, setOpen] = useState(null);
+  return (
+    <div className="max-w-lg mx-auto px-4 pt-5 pb-10 text-sm">
+      <div className="flex items-center justify-between mb-3">
+        <div className="sme-heading text-lg">ルール</div>
+        <button onClick={onBack} className="px-2 text-xl leading-none text-slate-300">×</button>
+      </div>
+      <div className="space-y-1.5">
+        {DETAILS.map(([title, summary, items], i) => (
+          <div key={title} className="sme-panel overflow-hidden">
+            <button onClick={() => setOpen(open === i ? null : i)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+              <span className="w-20 shrink-0 text-[13px] font-bold text-slate-100">{title}</span>
+              <span className="flex-1 text-[12px] text-amber-200">{summary}</span>
+              <span className="text-slate-500 text-xs">{open === i ? "▲" : "▼"}</span>
+            </button>
+            {open === i && (
+              <ul className="px-3 pb-3 space-y-1 text-xs text-slate-300">
+                {items.map((t) => <li key={t}>・{t}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+      <button onClick={onBack} className="sme-btn sme-btn-ghost sme-btn-sm mt-5">閉じる</button>
+    </div>
+  );
 }
 
 /* ============ チュートリアル本体 ============ */
+const SHOW_MS = 1500; // 操作のあと、数字やひとことを見せる時間
+
 function Tutorial({ onClose }) {
   const [board, setBoard] = useState(initialBoard);
+  const [intro, setIntro] = useState(0); // 0,1 = 最初の2枚 / 2 = 終わり
   const [idx, setIdx] = useState(0);
   const [sel, setSel] = useState(null);
-  const [showResult, setShowResult] = useState(false);
-  const [changes, setChanges] = useState([]); // [{ key, text }]
-  const [ghosts, setGhosts] = useState({ me: [], opp: [] }); // 破壊されたキャラ（結果表示の間だけ残す）
-  const [oppMsg, setOppMsg] = useState(null);
-  const [details, setDetails] = useState(false);
-  const before = useRef(null); // 相手ターン前の盤面
+  const [busy, setBusy] = useState(false); // 結果を見せている間・相手のターン中
+  const [popMap, setPopMap] = useState({});
+  const [popN, setPopN] = useState(0);
+  const [ghosts, setGhosts] = useState({ me: [], opp: [] });
+  const [toast, setToast] = useState(null);
+  const [view, setView] = useState("play"); // play / clear / details
   const timers = useRef([]);
-  const scrollRef = useRef(null);
+  const rootRef = useRef(null);
 
   const step = STEPS[idx];
-  const interactive = step.kind === "action" && !showResult && !oppMsg;
-
+  const interactive = intro >= 2 && !busy && view === "play";
+  const later = (ms, fn) => timers.current.push(setTimeout(fn, ms));
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  // 光らせる場所（結果表示中は、変わった場所）
-  const focus = oppMsg ? [] : showResult ? changes.map((c) => c.key) : step.focus;
-  const z = (key) => zoneClass(key, focus, showResult);
+  const ui = {
+    focus: interactive ? step.focus(sel, board) : [],
+    hint: interactive ? step.hint(sel, board) : null,
+    pops: popMap,
+    popN,
+    ghosts,
+  };
 
-  // 光っている場所が画面に入るようにスクロール
+  // 指さしの場所が画面に入るようにスクロール
+  const hintKey = ui.hint && ui.hint.key;
   useEffect(() => {
-    if (!focus.length || !scrollRef.current) return;
-    const el = scrollRef.current.querySelector(`[data-tut="${focus[0]}"]`)
-      || (focus[0].startsWith("u:") && scrollRef.current.querySelector(`[data-tut="${focus[0].startsWith("u:o") ? "oppField" : "meField"}"]`));
+    if (!hintKey || !rootRef.current) return;
+    const el = rootRef.current.querySelector(`[data-tut="${hintKey}"]`);
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, showResult]);
+  }, [hintKey]);
 
-  function finishAction(prev, next) {
-    setBoard(next);
-    setSel(null);
-    const ch = diff(prev, next);
-    const done = step.done ? step.done(next) : true;
-    // 破壊されたキャラは、結果表示の間だけ「破壊」として残す
+  // 変化を見せる（数字・破壊されたキャラ・ひとこと）
+  function show(prev, next, text) {
     const g = { me: [], opp: [] };
     for (const side of ["me", "opp"]) {
       for (const u of prev[side].field) if (!next[side].field.find((x) => x.uid === u.uid)) g[side].push(u);
     }
-    if (!done) {
-      setChanges(ch);
-      return;
-    }
-    if (!step.result) {
-      // 説明なしでそのまま次の手順へ
-      setChanges([]);
-      setIdx(idx + 1);
-      return;
-    }
     setGhosts(g);
-    setChanges(step.done ? diff(before.current || prev, next) : ch);
-    setShowResult(true);
+    setPopMap(pops(prev, next));
+    setPopN((n) => n + 1);
+    setToast(text ? { text, n: Date.now() } : null);
+  }
+  function clearShow() {
+    setGhosts({ me: [], opp: [] });
+    setPopMap({});
+    setToast(null);
+  }
+
+  function apply(next, prev = board) {
+    setBoard(next);
+    setSel(null);
+    const done = step.done ? step.done(next) : true;
+    if (!done) {
+      // とどめの途中：数字だけ見せて、そのまま続けて操作できる
+      show(prev, next, null);
+      later(SHOW_MS, () => setPopMap({}));
+      return;
+    }
+    setBusy(true);
+    show(prev, next, step.toast);
+    later(step.toast ? SHOW_MS + 300 : 900, () => {
+      clearShow();
+      setBusy(false);
+      if (idx + 1 >= STEPS.length) setView("clear");
+      else setIdx(idx + 1);
+    });
   }
 
   function onAct(a) {
     if (!interactive) return;
-    const al = step.allow || {};
-    if (a.type === "select") {
-      setSel(sel === a.uid ? null : a.uid);
-      return;
-    }
-    if (a.type === "draw" && al.draw) return finishAction(board, ACT.draw(board));
-    if (a.type === "play") return finishAction(board, ACT.play(board, a.uid));
-    if (a.type === "attack") {
-      if (step.done && !before.current) before.current = board;
-      return finishAction(board, ACT.attack(board, a.uid, a.target));
-    }
-    if (a.type === "toSac" && al.toSac) return finishAction(board, ACT.toSac(board));
-    if (a.type === "sac") return finishAction(board, ACT.sac(board, a.uid));
+    const al = step.allow;
+    if (a.type === "select") return setSel(sel === a.uid ? null : a.uid);
+    if (a.type === "draw" && al.draw) return apply(ACT.draw(board));
+    if (a.type === "play") return apply(ACT.play(board, a.uid));
+    if (a.type === "attack") return apply(ACT.attack(board, a.uid, a.target));
+    if (a.type === "toSac" && al.toSac) return apply(ACT.toSac(board));
+    if (a.type === "sac") return apply(ACT.sac(board, a.uid));
     if (a.type === "end" && al.end) {
       // 相手のターンを自動で進める
-      const start = board;
+      setBusy(true);
       let cur = board;
-      let t = 0;
-      setOppMsg("ターン終了…");
-      OPP_TURN.forEach(([wait, fn, msg], i) => {
-        t += wait;
-        timers.current.push(setTimeout(() => {
+      OPP_TURN.forEach(([fn, text], i) => {
+        later(600 + i * 1500, () => {
+          const prev = cur;
           cur = clone(cur);
           fn(cur);
           setBoard(cur);
-          if (i < OPP_TURN.length - 1) {
-            setOppMsg(msg);
-          } else {
-            setOppMsg(null);
-            setGhosts({ me: [], opp: [] });
-            setChanges(diff(start, cur).filter((c) => !c.key.startsWith("u:o") && c.key !== "oppInfo"));
-            setShowResult(true);
-          }
-        }, t));
+          show(prev, cur, text);
+        });
+      });
+      later(600 + OPP_TURN.length * 1500, () => {
+        clearShow();
+        setBusy(false);
+        setIdx(idx + 1);
       });
     }
-  }
-
-  function next() {
-    setShowResult(false);
-    setChanges([]);
-    setGhosts({ me: [], opp: [] });
-    setSel(null);
-    before.current = null;
-    if (idx + 1 >= STEPS.length) {
-      setDetails(true);
-      return;
-    }
-    setIdx(idx + 1);
   }
 
   function replay() {
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setBoard(initialBoard());
-    setIdx(STEPS.findIndex((s) => s.part === 1)); // 実践の最初から
+    setIdx(0);
     setSel(null);
-    setShowResult(false);
-    setChanges([]);
-    setGhosts({ me: [], opp: [] });
-    setOppMsg(null);
-    before.current = null;
-    setDetails(false);
+    setBusy(false);
+    clearShow();
+    setView("play");
   }
 
   return (
-    <div ref={scrollRef} className="fixed inset-0 z-50 overflow-y-auto sme-tut-root">
+    <div ref={rootRef} className="fixed inset-0 z-50 overflow-y-auto sme-tut-root">
       <style>{TUT_CSS}</style>
-      {details ? (
-        <DetailsView onReplay={replay} onClose={onClose} />
+      {view === "details" ? (
+        <DetailsView onBack={() => setView("clear")} />
       ) : (
         <>
-          <div className="pb-72">
-            <Board b={board} ghosts={ghosts} z={z} sel={sel} allow={step.allow || {}} interactive={interactive} onAct={onAct} />
+          <div className="sticky top-0 z-30">
+            <FlowBar b={board} />
+            <button onClick={onClose} className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-2 py-0.5 rounded bg-black/50 border border-white/30 text-white">
+              スキップ
+            </button>
           </div>
-          <Coach
-            step={step}
-            idx={idx}
-            sel={sel}
-            b={board}
-            changes={changes}
-            oppMsg={oppMsg}
-            showResult={showResult}
-            onNext={next}
-            onSkip={() => setDetails(true)}
-            onClose={onClose}
-          />
+          <div className="pb-24">
+            <Board b={board} ui={ui} sel={sel} allow={step.allow} interactive={interactive} onAct={onAct} />
+          </div>
+          {toast && (
+            <div className="fixed inset-x-0 bottom-8 z-40 flex justify-center pointer-events-none">
+              <div key={toast.n} className="tut-toast">{toast.text}</div>
+            </div>
+          )}
+          {intro < 2 && <Intro page={intro} onNext={() => setIntro(intro + 1)} />}
+          {view === "clear" && <Clear onDetails={() => setView("details")} onReplay={replay} onClose={onClose} />}
         </>
       )}
     </div>
@@ -906,14 +628,44 @@ function Tutorial({ onClose }) {
 
 const TUT_CSS = `
 .sme-tut-root { background: radial-gradient(120% 60% at 50% 0%, #1f1a45 0%, #0a0818 70%); }
-.tut-dim { opacity: 0.28; filter: grayscale(40%); transition: opacity .25s; }
-.tut-focus { position: relative; z-index: 5; box-shadow: 0 0 0 2px #fcd34d, 0 0 18px 4px rgba(252, 211, 77, .55); animation: tutPulse 1.4s ease-in-out infinite; }
-.tut-flash { position: relative; z-index: 5; box-shadow: 0 0 0 2px #6ee7b7, 0 0 18px 4px rgba(110, 231, 183, .55); animation: tutPulse 1.1s ease-in-out infinite; }
+.tut-dim { opacity: 0.3; filter: grayscale(40%); transition: opacity .25s; }
+.tut-focus { z-index: 5; box-shadow: 0 0 0 2px #fcd34d, 0 0 18px 4px rgba(252,211,77,.55); animation: tutPulse 1.4s ease-in-out infinite; }
 @keyframes tutPulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.3); } }
+
+.tut-hint { position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); z-index: 20; white-space: nowrap;
+  padding: 5px 11px; border-radius: 999px; font-size: 13px; font-weight: 900; color: #2a1800;
+  background: linear-gradient(160deg, #fff4c8, #fbbf24); box-shadow: 0 3px 12px rgba(0,0,0,.6), 0 0 14px rgba(251,191,36,.6);
+  animation: tutBob 0.9s ease-in-out infinite; pointer-events: none; }
+.tut-hint.below { bottom: auto; top: calc(100% + 6px); }
+@keyframes tutBob { 0%,100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, -5px); } }
+
+.tut-pop { position: absolute; left: 50%; top: 40%; z-index: 25; white-space: nowrap; pointer-events: none;
+  font-size: 22px; font-weight: 900; color: #6ee7b7; text-shadow: 0 2px 4px #000, 0 0 10px rgba(110,231,183,.8);
+  animation: tutPopUp 1.5s ease-out both; }
+.tut-pop.bad { color: #fda4af; text-shadow: 0 2px 4px #000, 0 0 10px rgba(253,164,175,.8); }
+@keyframes tutPopUp { 0% { transform: translate(-50%, 0) scale(.5); opacity: 0; } 15% { transform: translate(-50%, -14px) scale(1.25); opacity: 1; }
+  70% { transform: translate(-50%, -26px) scale(1); opacity: 1; } 100% { transform: translate(-50%, -38px); opacity: 0; } }
+
 .tut-ghost { opacity: .45; filter: grayscale(80%); }
-.tut-ghost .unit { border-style: dashed; }
-.tut-ghost-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 900; color: #fecaca; text-shadow: 0 1px 3px #000; transform: rotate(-12deg); pointer-events: none; }
-.tut-coach { background: linear-gradient(165deg, rgba(40,34,88,.97), rgba(14,11,32,.97)); border: 1px solid rgba(252,211,77,.45); box-shadow: 0 -4px 28px rgba(0,0,0,.6); }
+
+.tut-toast { padding: 10px 22px; border-radius: 14px; font-size: 18px; font-weight: 900; color: #fff;
+  background: rgba(20,14,50,.92); border: 2px solid rgba(252,211,77,.7); box-shadow: 0 6px 30px rgba(0,0,0,.7);
+  animation: tutToast 1.6s ease-out both; }
+@keyframes tutToast { 0% { transform: scale(.6); opacity: 0; } 12% { transform: scale(1.08); opacity: 1; } 22% { transform: scale(1); } 85% { opacity: 1; } 100% { opacity: 0; } }
+
+.tut-flow { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 60px 8px 8px; }
+.tut-flow.mine { background: linear-gradient(90deg, #3a2604, #6b4708, #3a2604); }
+.tut-flow.theirs { background: linear-gradient(90deg, #1c1840, #3a3470, #1c1840); }
+.tut-flow .who { font-size: 11px; font-weight: 900; color: #fff; margin-right: 4px; }
+.tut-flow .step { font-size: 13px; font-weight: 800; padding: 3px 10px; border-radius: 999px; color: rgba(255,255,255,.4); }
+.tut-flow .step.on { color: #2a1800; background: linear-gradient(160deg, #fff4c8, #fbbf24); box-shadow: 0 0 12px rgba(251,191,36,.7); }
+.tut-flow.theirs .step.on { color: #fff; background: linear-gradient(160deg, #8f8af0, #4b44b8); box-shadow: 0 0 12px rgba(154,166,255,.7); }
+.tut-flow .arrow { color: rgba(255,255,255,.4); font-weight: 900; margin: 0 1px; }
+
+.tut-intro { animation: tutIn .35s ease-out both; }
+@keyframes tutIn { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.tut-win { animation: tutWin 1s ease-in-out infinite; text-shadow: 0 0 24px rgba(252,211,77,.8); }
+@keyframes tutWin { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
 `;
 
 /* ============ タイトル画面のボタン ============ */
