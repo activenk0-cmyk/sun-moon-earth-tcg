@@ -443,9 +443,9 @@ function Clear({ onDetails, onReplay, onClose }) {
         <div className="mt-1 text-xs text-slate-400">カードの効果はタップで確認できます</div>
       </div>
       <div className="mt-8 w-full max-w-xs space-y-2">
-        <button onClick={onClose} className="sme-btn sme-btn-sun">閉じる</button>
-        <button onClick={onDetails} className="sme-btn sme-btn-ghost sme-btn-sm">もっと詳しいルール</button>
+        <button onClick={onDetails} className="sme-btn sme-btn-sun">もっと詳しいルール</button>
         <button onClick={onReplay} className="sme-btn sme-btn-ghost sme-btn-sm">もう一度</button>
+        <button onClick={onClose} className="sme-btn sme-btn-ghost sme-btn-sm">閉じる</button>
       </div>
     </div>
   );
@@ -523,14 +523,6 @@ function Tutorial({ onClose }) {
     popN,
     ghosts,
   };
-
-  // 指さしの場所が画面に入るようにスクロール
-  const hintKey = ui.hints.length ? ui.hints[ui.hints.length - 1].key : null;
-  useEffect(() => {
-    if (!hintKey || !rootRef.current) return;
-    const el = rootRef.current.querySelector(`[data-tut="${hintKey}"]`);
-    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [hintKey, idx]);
 
   // 変化を見せる（数字・破壊されたキャラ・ひとこと）。変化がない時は前の数字を残す
   function show(prev, next, text, popOver) {
@@ -628,7 +620,7 @@ function Tutorial({ onClose }) {
               スキップ
             </button>
           </div>
-          <div className="pb-24">
+          <div className="pb-20">
             <Board b={board} ui={ui} sel={sel} allow={step.allow} interactive={interactive} onAct={onAct} />
           </div>
           {toast && (
