@@ -1210,3 +1210,15 @@ body > * { position: relative; z-index: 1; }
   0% { transform: translateX(28px) scale(0.85); opacity: 0; }
   100% { transform: translateX(0) scale(1); opacity: 1; }
 }
+
+/* ===== カード文章のリンク（用語・カード名） ===== */
+.rt-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.rt-term { color: #fde68a; text-decoration-color: rgba(253, 230, 138, 0.6); }
+.rt-card { color: #a5d8ff; text-decoration-color: rgba(165, 216, 255, 0.6); }
+.rt-link:active { opacity: 0.6; }

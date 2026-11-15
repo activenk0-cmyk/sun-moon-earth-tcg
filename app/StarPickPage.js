@@ -6,6 +6,7 @@ import {
   STARPICK_BATTLES, battleLabel, newRun, loadRun, saveRun, pickCard, afterBattle,
 } from "../lib/starpick";
 import { recordMatchStats, recordStarpickRun } from "../lib/statsStore";
+import RichText from "./RichText";
 
 /* ============================================================
    スターピックの画面（ピック・試合の合間・敗北・完全制覇）
@@ -176,7 +177,7 @@ export default function StarPick({ uid, onStart, onTitle }) {
                 {c.stat && <span className="text-[11px] text-slate-300">STAT {c.stat}</span>}
               </div>
               <div className="text-base font-bold my-1">{c.name}</div>
-              <div className="text-[12px] text-slate-300 leading-relaxed">{c.text}</div>
+              <div className="text-[12px] text-slate-300 leading-relaxed"><RichText text={c.text} /></div>
             </button>
           ))}
         </div>
@@ -352,7 +353,7 @@ function CardModal({ card: c, onClose }) {
             <span className="unit-stat">{c.stat}</span>
           </div>
         )}
-        <p className="text-sm leading-relaxed text-slate-200">{c.text}</p>
+        <p className="text-sm leading-relaxed text-slate-200"><RichText text={c.text} /></p>
         <button onClick={onClose} className="sme-btn sme-btn-ghost sme-btn-sm mt-5">
           閉じる
         </button>

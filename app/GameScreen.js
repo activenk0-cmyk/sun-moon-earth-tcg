@@ -23,6 +23,7 @@ import {
 } from "./GameParts";
 import { currentUid, recordStreak, gameKey, stampLog } from "../lib/online";
 import FxLayer, { useFxPlayer } from "./FxLayer";
+import RichText from "./RichText";
 import { FX_SPEEDS, loadFxSpeed, saveFxSpeed, logGroupAt, fxToChanges } from "../lib/fx";
 
 /* ============ 定数 ============ */
@@ -104,7 +105,7 @@ export function DetailModal({ card, onClose }) {
             <span className="unit-stat">{c.stat}</span>
           </div>
         )}
-        <p className="text-sm leading-relaxed text-slate-200">{c.text}</p>
+        <p className="text-sm leading-relaxed text-slate-200"><RichText text={c.text} /></p>
         <button onClick={onClose} className="sme-btn sme-btn-ghost sme-btn-sm mt-5">
           閉じる
         </button>
@@ -1174,7 +1175,7 @@ function ActionModal({ detail, phase, isMyTurn, me, opp, onClose, onPlay, onSac,
                 {u && u.stat !== c.stat && <span className="text-xs text-slate-400">(元 {c.stat})</span>}
               </div>
             )}
-            <p className="text-sm leading-relaxed text-slate-200 mb-3">{c.text}</p>
+            <p className="text-sm leading-relaxed text-slate-200 mb-3"><RichText text={c.text} /></p>
             <StatusLines lines={status} />
           </>
         ) : (
