@@ -76,31 +76,35 @@ const ACT = {
   toSac(b) {
     return { ...clone(b), phase: "sacrifice" };
   },
-  sac(b, uid) {
-    const n = clone(b);
-    const i = n.me.hand.findIndex((h) => h.uid === uid);
-    const c = n.me.hand[i];
-    n.me.hand.splice(i, 1);
-    n.me.sac += 1;
-    n.me.maxCost += 1;
-    n.me.hp += c.cost;
-    n.me.sacrificed = true;
-    drawOne(n.me);
-    return n;
-  },
 };
 
-// 相手のターン（自動）：[盤面の変化, ひとこと]
+// 生贄の3つの効果を、1つずつ順番に見せる
+function sacSeq(uid) {
+  return [
+    [(n) => {
+      const i = n.me.hand.findIndex((h) => h.uid === uid);
+      n.me.sacCard = n.me.hand[i];
+      n.me.hand.splice(i, 1);
+      n.me.sac += 1;
+      n.me.maxCost += 1;
+      n.me.sacrificed = true;
+    }, "① コスト上限 +1"],
+    [(n) => { n.me.hp += n.me.sacCard.cost; }, "② HP回復（カードのコスト分）"],
+    [(n) => { drawOne(n.me); delete n.me.sacCard; }, "③ 1枚引く"],
+  ];
+}
+
+// 相手のターン（自動）：[盤面の変化, ひとこと, 数字の上書き]
 const OPP_TURN = [
   [(n) => { n.turn = "opp"; n.phase = "draw"; n.opp.hand += 1; n.opp.deck -= 1; }, "相手のドロー"],
   [(n) => { n.phase = "main"; n.opp.hand -= 1; n.opp.cost -= 3; n.opp.field.push({ ...unit("o2", "ゴブリン", 3, "moon"), sick: true }); }, "相手が召喚"],
-  [(n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 2; }, "相手も生贄でHP回復"],
+  [(n) => { n.phase = "sacrifice"; n.opp.sac += 1; n.opp.deck -= 1; n.opp.maxCost += 1; n.opp.hp += 2; }, "相手も生贄でパワーアップ"],
   [(n) => {
     n.turn = "me"; n.phase = "draw"; n.turnCount = 2;
     n.me.cost = n.me.maxCost; n.me.sacrificed = false;
     n.me.field.forEach((u) => { u.sick = false; u.attacked = false; });
     n.opp.field.forEach((u) => { u.sick = false; });
-  }, "あなたの番！ コスト全回復"],
+  }, "あなたの番！ コストが 2→3 に増えた", { meCost: "3/3" }],
 ];
 
 /* ============ 変わった場所に出す数字（−2・破壊！など） ============ */
@@ -127,55 +131,61 @@ function pops(a, b) {
 }
 
 /* ============ 手順 ============ */
-// hint(sel)：指さしの吹き出し { key, text, below } / focus(sel)：光らせる場所 / toast：操作後のひとこと
+// hints(sel)：指さしの吹き出し [{ key, text, below }] / focus(sel)：光らせる場所
+// toasts：操作のあとに順番に出すひとこと
 const STEPS = [
   {
     allow: { draw: true },
-    hint: () => ({ key: "controls", text: "タップして1枚引く" }),
+    hints: () => [{ key: "controls", text: "タップして1枚引く" }],
     focus: () => ["controls"],
   },
   {
     allow: { play: ["h1"] },
-    hint: () => ({ key: "hand", text: "騎士見習いを出そう" }),
-    focus: () => ["card:h1"],
-    toast: "出したターンはお休み（★）",
+    hints: () => [{ key: "meCost", text: "今のコストは 2" }, { key: "hand", text: "コスト2のカードを出そう", below: true, at: "bottom" }],
+    focus: () => ["card:h1", "meCost"],
+    toasts: ["コストを払って召喚！", "出したターンはお休み（★）"],
   },
   {
     allow: { select: ["u1"], target: ["o1"] },
-    hint: (sel) => (sel ? { key: "oppField", text: "スライムを攻撃！", below: true } : { key: "u:u1", text: "戦士をタップ" }),
+    hints: (sel) => [sel ? { key: "oppField", text: "スライムを攻撃！", below: true } : { key: "u:u1", text: "戦士をタップ" }],
     focus: (sel) => (sel ? ["u:o1"] : ["u:u1"]),
-    toast: "数字どうしで削り合う",
+    toasts: ["数字どうしで削り合う"],
   },
   {
     allow: { select: ["u2"], target: ["face"] },
-    hint: (sel) => (sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "u:u2", text: "弓兵をタップ" }),
+    hints: (sel) => [sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "u:u2", text: "弓兵をタップ" }],
     focus: (sel) => (sel ? ["face"] : ["u:u2"]),
-    toast: "相手のHPに直接ダメージ",
+    toasts: ["相手のHPに直接ダメージ"],
   },
   {
     allow: { toSac: true },
-    hint: () => ({ key: "controls", text: "メインはおしまい" }),
+    hints: () => [{ key: "controls", text: "メインはおしまい" }],
     focus: () => ["controls"],
   },
   {
     allow: { sac: ["h2"] },
-    hint: () => ({ key: "hand", text: "使わないカードを生贄に" }),
+    hints: () => [{ key: "hand", text: "使わないカードを生贄に" }],
     focus: () => ["card:h2"],
-    toast: "生贄でパワーアップ！",
   },
   {
     allow: { end: true },
-    hint: () => ({ key: "controls", text: "ターン終了" }),
+    hints: () => [{ key: "controls", text: "ターン終了" }],
     focus: () => ["controls"],
   },
   {
     allow: { draw: true },
-    hint: () => ({ key: "controls", text: "また1枚引く" }),
+    hints: () => [{ key: "controls", text: "また1枚引く" }],
     focus: () => ["controls"],
   },
   {
+    allow: { play: ["h5"] },
+    hints: () => [{ key: "meCost", text: "コスト 3 に増えた" }, { key: "hand", text: "コスト3のカードも出せる！", below: true, at: "bottom" }],
+    focus: () => ["card:h5", "meCost"],
+    toasts: ["コストが増えるほど強いカードが出せる"],
+  },
+  {
     allow: { select: ["u1", "u2", "h1"], target: ["face"] },
-    hint: (sel) => (sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "meField", text: "全員で攻撃！" }),
+    hints: (sel) => [sel ? { key: "face", text: "相手に直接攻撃！" } : { key: "meField", text: "全員で攻撃！" }],
     focus: (sel) => (sel ? ["face"] : ["meField", "oppHp"]),
     done: (b) => b.opp.hp <= 0,
   },
@@ -210,12 +220,12 @@ function Spot({ k, ui, className = "", children }) {
   return (
     <div data-tut={k} className={`relative ${className} ${zoneClass(k, ui.focus)}`}>
       {children}
-      {ui.hint && ui.hint.key === k && (
-        <div className={`tut-hint ${ui.hint.below ? "below" : ""}`}>
-          {ui.hint.below ? "👆 " : ""}{ui.hint.text}{ui.hint.below ? "" : " 👇"}
+      {ui.hints.filter((h) => h.key === k).map((h) => (
+        <div key={h.text} className={`tut-hint ${h.below ? "below" : ""}`}>
+          {h.below ? "👆 " : ""}{h.text}{h.below ? "" : " 👇"}
         </div>
-      )}
-      {pop && <div key={`${ui.popN}-${k}`} className={`tut-pop ${pop.startsWith("-") || pop === "破壊！" ? "bad" : ""}`}>{pop}</div>}
+      ))}
+      {pop && <div key={`${ui.popN}-${k}`} className={`tut-pop ${k.endsWith("Hp") ? "side" : ""} ${pop.startsWith("-") || pop === "破壊！" ? "bad" : ""}`}>{pop}</div>}
     </div>
   );
 }
@@ -406,7 +416,7 @@ function Intro({ page, onNext }) {
       ) : (
         <div key="p1" className="tut-intro w-full max-w-xs">
           <div className="text-sm font-bold text-slate-300 mb-3">1ターンはこれだけ</div>
-          {[["ドロー", "1枚引く"], ["メイン", "出す・攻撃"], ["生贄", "パワーアップ"]].map(([t, d], i) => (
+          {[["ドロー", "1枚引く"], ["メイン", "出す・攻撃"], ["生贄", "コスト↑ HP↑ 1枚引く"]].map(([t, d], i) => (
             <div key={t}>
               <div className="rounded-xl border-2 border-amber-300/80 bg-amber-400/15 py-2.5">
                 <div className="text-xl font-black text-amber-200">{t}</div>
@@ -482,14 +492,14 @@ function DetailsView({ onBack }) {
 }
 
 /* ============ チュートリアル本体 ============ */
-const SHOW_MS = 1500; // 操作のあと、数字やひとことを見せる時間
+const SEQ_MS = 1500; // ひとことを1つ見せる時間
 
 function Tutorial({ onClose }) {
   const [board, setBoard] = useState(initialBoard);
   const [intro, setIntro] = useState(0); // 0,1 = 最初の2枚 / 2 = 終わり
   const [idx, setIdx] = useState(0);
   const [sel, setSel] = useState(null);
-  const [busy, setBusy] = useState(false); // 結果を見せている間・相手のターン中
+  const [busy, setBusy] = useState(false); // 変化を見せている間・相手のターン中
   const [popMap, setPopMap] = useState({});
   const [popN, setPopN] = useState(0);
   const [ghosts, setGhosts] = useState({ me: [], opp: [] });
@@ -497,6 +507,8 @@ function Tutorial({ onClose }) {
   const [view, setView] = useState("play"); // play / clear / details
   const timers = useRef([]);
   const rootRef = useRef(null);
+  const boardRef = useRef(board);
+  boardRef.current = board;
 
   const step = STEPS[idx];
   const interactive = intro >= 2 && !busy && view === "play";
@@ -504,30 +516,34 @@ function Tutorial({ onClose }) {
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   const ui = {
-    focus: interactive ? step.focus(sel, board) : [],
-    hint: interactive ? step.hint(sel, board) : null,
+    // 操作待ちは「次に押す所」、変化を見せている間は「変わった所」を光らせる
+    focus: interactive ? step.focus(sel, board) : Object.keys(popMap),
+    hints: interactive ? step.hints(sel, board) : [],
     pops: popMap,
     popN,
     ghosts,
   };
 
   // 指さしの場所が画面に入るようにスクロール
-  const hintKey = ui.hint && ui.hint.key;
+  const hintKey = ui.hints.length ? ui.hints[ui.hints.length - 1].key : null;
   useEffect(() => {
     if (!hintKey || !rootRef.current) return;
     const el = rootRef.current.querySelector(`[data-tut="${hintKey}"]`);
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [hintKey]);
+  }, [hintKey, idx]);
 
-  // 変化を見せる（数字・破壊されたキャラ・ひとこと）
-  function show(prev, next, text) {
-    const g = { me: [], opp: [] };
-    for (const side of ["me", "opp"]) {
-      for (const u of prev[side].field) if (!next[side].field.find((x) => x.uid === u.uid)) g[side].push(u);
+  // 変化を見せる（数字・破壊されたキャラ・ひとこと）。変化がない時は前の数字を残す
+  function show(prev, next, text, popOver) {
+    const p = { ...pops(prev, next), ...(popOver || {}) };
+    if (Object.keys(p).length) {
+      const g = { me: [], opp: [] };
+      for (const side of ["me", "opp"]) {
+        for (const u of prev[side].field) if (!next[side].field.find((x) => x.uid === u.uid)) g[side].push(u);
+      }
+      setGhosts(g);
+      setPopMap(p);
+      setPopN((n) => n + 1);
     }
-    setGhosts(g);
-    setPopMap(pops(prev, next));
-    setPopN((n) => n + 1);
     setToast(text ? { text, n: Date.now() } : null);
   }
   function clearShow() {
@@ -536,24 +552,44 @@ function Tutorial({ onClose }) {
     setToast(null);
   }
 
-  function apply(next, prev = board) {
-    setBoard(next);
-    setSel(null);
-    const done = step.done ? step.done(next) : true;
-    if (!done) {
-      // とどめの途中：数字だけ見せて、そのまま続けて操作できる
-      show(prev, next, null);
-      later(SHOW_MS, () => setPopMap({}));
-      return;
-    }
+  // 盤面の変化を順番に見せて、最後に次の手順へ
+  // items: [[(盤面) => 盤面を書き換える, ひとこと, 数字の上書き], ...]
+  function runSeq(items, first = 0) {
     setBusy(true);
-    show(prev, next, step.toast);
-    later(step.toast ? SHOW_MS + 300 : 900, () => {
+    setSel(null);
+    let cur = boardRef.current;
+    items.forEach(([fn, text, popOver], i) => {
+      later(first + i * SEQ_MS, () => {
+        const prev = cur;
+        cur = clone(cur);
+        fn(cur);
+        setBoard(cur);
+        show(prev, cur, text, popOver);
+      });
+    });
+    const end = first + (items.length - 1) * SEQ_MS + (items.some((x) => x[1]) ? SEQ_MS + 200 : 900);
+    later(end, () => {
       clearShow();
       setBusy(false);
       if (idx + 1 >= STEPS.length) setView("clear");
       else setIdx(idx + 1);
     });
+  }
+
+  // ふつうの操作：盤面を変えたあと、ひとことを順番に出す
+  function apply(next) {
+    if (step.done && !step.done(next)) {
+      // とどめの途中：数字だけ見せて、そのまま続けて操作できる
+      const prev = board;
+      setBoard(next);
+      setSel(null);
+      show(prev, next, null);
+      later(SEQ_MS, () => setPopMap({}));
+      return;
+    }
+    const toasts = step.toasts || [];
+    const items = [[(n) => Object.assign(n, clone(next)), toasts[0]], ...toasts.slice(1).map((t) => [() => {}, t])];
+    runSeq(items);
   }
 
   function onAct(a) {
@@ -564,26 +600,8 @@ function Tutorial({ onClose }) {
     if (a.type === "play") return apply(ACT.play(board, a.uid));
     if (a.type === "attack") return apply(ACT.attack(board, a.uid, a.target));
     if (a.type === "toSac" && al.toSac) return apply(ACT.toSac(board));
-    if (a.type === "sac") return apply(ACT.sac(board, a.uid));
-    if (a.type === "end" && al.end) {
-      // 相手のターンを自動で進める
-      setBusy(true);
-      let cur = board;
-      OPP_TURN.forEach(([fn, text], i) => {
-        later(600 + i * 1500, () => {
-          const prev = cur;
-          cur = clone(cur);
-          fn(cur);
-          setBoard(cur);
-          show(prev, cur, text);
-        });
-      });
-      later(600 + OPP_TURN.length * 1500, () => {
-        clearShow();
-        setBusy(false);
-        setIdx(idx + 1);
-      });
-    }
+    if (a.type === "sac") return runSeq(sacSeq(a.uid));
+    if (a.type === "end" && al.end) return runSeq(OPP_TURN, 500);
   }
 
   function replay() {
@@ -614,7 +632,7 @@ function Tutorial({ onClose }) {
             <Board b={board} ui={ui} sel={sel} allow={step.allow} interactive={interactive} onAct={onAct} />
           </div>
           {toast && (
-            <div className="fixed inset-x-0 bottom-8 z-40 flex justify-center pointer-events-none">
+            <div className="fixed inset-x-0 bottom-8 z-40 flex justify-center pointer-events-none px-3">
               <div key={toast.n} className="tut-toast">{toast.text}</div>
             </div>
           )}
@@ -646,6 +664,7 @@ const TUT_CSS = `
 @keyframes tutPopUp { 0% { transform: translate(-50%, 0) scale(.5); opacity: 0; } 15% { transform: translate(-50%, -14px) scale(1.25); opacity: 1; }
   70% { transform: translate(-50%, -26px) scale(1); opacity: 1; } 100% { transform: translate(-50%, -38px); opacity: 0; } }
 
+.tut-pop.side { left: 170%; top: 10%; font-size: 26px; }
 .tut-ghost { opacity: .45; filter: grayscale(80%); }
 
 .tut-toast { padding: 10px 22px; border-radius: 14px; font-size: 18px; font-weight: 900; color: #fff;
