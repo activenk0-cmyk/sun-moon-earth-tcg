@@ -18,6 +18,7 @@ import * as E from "../lib/engine";
 import { cpuStep } from "../lib/cpu";
 import RankResult from "./RankResult";
 import { recordMatchStats } from "../lib/statsStore";
+import { ghostNote, flushGhost } from "../lib/ghostLog";
 import {
   PHASE_LABEL, fxClass, cardStatus, StatusLines, AbilityRow, PhaseBar, ManaBar, EmptySlots, UnitCard,
 } from "./GameParts";
@@ -180,10 +181,17 @@ export function GameScreen({
   // 決着したら連勝記録を更新（CPU戦とルームマッチは別々）
   const [streak, setStreak] = useState(null);
   const endKey = state && state.phase === "end" ? gameKey(state, isCpu ? null : room) : null;
+  // ゴースト用：自分の行動を記録する（行動する直前の状態で記録）
+  function noteGhost(act) {
+    if (!act || !state || state.phase === "end") return;
+    ghostNote(gameKey(state, isCpu ? null : room), state, myId, act);
+  }
   useEffect(() => {
     if (!endKey || !state || !state.winner) return;
         // マイページ用の記録（ランク戦・ルームマッチとも記録する）
     const mySel = state.players && state.players[myId] ? state.players[myId].selection : null;
+    // ゴースト用の癖の記録（画面には出さない）
+    flushGhost(currentUid, endKey, state.starpick ? "starpick" : isCpu ? "cpu" : "room", state.winner === myId);
     if (state.starpick) return; // スターピックの記録は StarPickPage.js でする（連勝記録も別）
     recordMatchStats(currentUid, endKey, isCpu ? "cpu" : "room", mySel, state.winner === myId);
     if (isCpu && state.ranked) return; // ランク戦の連勝はランクのデータで管理する
@@ -407,8 +415,9 @@ export function GameScreen({
   const canMain = E.isActive(state, myId, "main") && !mode;
 
   /* ---- 状態を進める（連打での二重実行を防ぐ） ---- */
-  async function run(next) {
+  async function run(next, act) {
     if (!next || busy.current) return;
+    noteGhost(act);
     busy.current = true;
     try {
       await apply(stampLog(next, state));
@@ -442,7 +451,7 @@ export function GameScreen({
       setPendingPlay({ handIdx, haste, kind: tk.kind, candidates: tk.candidates });
       return;
     }
-    run(E.playCard(state, myId, handIdx, { haste }));
+    run(E.playCard(state, myId, handIdx, { haste }), { type: "play", handIdx, haste });
   }
 
   /* ---- 攻撃 ---- */
@@ -452,7 +461,7 @@ export function GameScreen({
       setPendingAttack({ attackerUid, targetUid, toFace, candidates: ex });
       return;
     }
-    run(E.attack(state, myId, attackerUid, { targetUid, toFace }));
+    run(E.attack(state, myId, attackerUid, { targetUid, toFace }), { type: "attack", attackerUid, targetUid, toFace });
   }
 
   /* ---- 対象選択の確定 ---- */
@@ -461,13 +470,13 @@ export function GameScreen({
     if (pendingPlay) {
       const { handIdx, haste } = pendingPlay;
       setPendingPlay(null);
-      run(E.playCard(state, myId, handIdx, { haste, target: targetUid }));
+      run(E.playCard(state, myId, handIdx, { haste, target: targetUid }), { type: "play", handIdx, haste, target: targetUid });
       return;
     }
     if (pendingAttack) {
       const { attackerUid, targetUid: t, toFace } = pendingAttack;
       setPendingAttack(null);
-      run(E.attack(state, myId, attackerUid, { targetUid: t, toFace, extraTarget: targetUid }));
+      run(E.attack(state, myId, attackerUid, { targetUid: t, toFace, extraTarget: targetUid }), { type: "attack", attackerUid, targetUid: t, toFace });
     }
   }
 
@@ -784,7 +793,7 @@ export function GameScreen({
         {isMyTurn && phase === "main" && (
           <button
             disabled={!!mode}
-            onClick={() => { setSel(null); run(E.toSacrifice(state, myId)); }}
+            onClick={() => { setSel(null); run(E.toSacrifice(state, myId), { type: "end" }); }}
             className="sme-btn sme-btn-sun !py-2.5"
           >
             メインフェーズ終了 → 生贄フェーズへ
@@ -800,7 +809,7 @@ export function GameScreen({
                   ? "コスト上限のため生贄できません"
                   : "手札をタップして生贄にできます（任意・1回まで）"}
             </div>
-            <button onClick={() => run(E.endTurn(state, myId))} className="sme-btn sme-btn-moon !py-2.5">
+            <button onClick={() => run(E.endTurn(state, myId), { type: "turnEnd" })} className="sme-btn sme-btn-moon !py-2.5">
               {me.sacrificedThisTurn ? "ターン終了" : "生贄せずにターン終了"}
             </button>
           </>
@@ -999,7 +1008,7 @@ export function GameScreen({
           opp={opp}
           onRemove={(abilityUid) => {
             setDetail(null);
-            run(E.removeAbility(state, myId, abilityUid));
+            run(E.removeAbility(state, myId, abilityUid), { type: "remove", abilityUid });
           }}
           onClose={() => setDetail(null)}
           onPlay={(haste) => {
@@ -1010,7 +1019,7 @@ export function GameScreen({
           onSac={() => {
             const idx = detail.handIdx;
             setDetail(null);
-            run(E.sacrifice(state, myId, idx));
+            run(E.sacrifice(state, myId, idx), { type: "sac", handIdx: idx });
           }}
           canSac={canSac}
         />
