@@ -406,3 +406,145 @@ function Celebration() {
     </>
   );
 }
+
+/* ============================================================
+   ルームマッチ（スターピック対戦）のピック画面
+   ・各枠で陣営の違う3枚から1枚を選ぶ。ピックの途中経過はブラウザに保存（再読み込みしても候補は変わらない）
+   ・draftKey … 部屋ID・試合番号・自分のIDから作るキー（試合ごとに新しくピックし直す）
+   ・onSelection … 選んだカード（途中まででも）を page.js のデッキに反映する
+   ============================================================ */
+const ROOM_PICK_PREFIX = "sme_roompick_v1:";
+
+function loadRoomDraft(key) {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(ROOM_PICK_PREFIX + key);
+    const d = raw ? JSON.parse(raw) : null;
+    return d && d.offers ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRoomDraft(key, d) {
+  if (typeof window === "undefined") return;
+  try {
+    // 古い試合のピックは消しておく
+    for (let i = window.localStorage.length - 1; i >= 0; i--) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(ROOM_PICK_PREFIX) && k !== ROOM_PICK_PREFIX + key) window.localStorage.removeItem(k);
+    }
+    window.localStorage.setItem(ROOM_PICK_PREFIX + key, JSON.stringify(d));
+  } catch {
+    // 保存できなくても遊べるようにする
+  }
+}
+
+export function RoomStarPick({ draftKey, locked, onSelection }) {
+  useSpCss();
+  const [draft, setDraftState] = useState(null);
+  const [chosen, setChosen] = useState(null);
+  const [detail, setDetail] = useState(null);
+
+  // 試合が変わったら、保存済みのピックを読む（無ければ新しく候補を作る）
+  useEffect(() => {
+    let d = loadRoomDraft(draftKey);
+    if (!d) {
+      const r = newRun();
+      d = { offers: r.offers, slotIndex: 0, selection: {}, phase: "pick" };
+      saveRoomDraft(draftKey, d);
+    }
+    setDraftState(d);
+    setChosen(null);
+  }, [draftKey]);
+
+  // 選んだカードをデッキに反映
+  useEffect(() => {
+    if (draft) onSelection({ ...draft.selection });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  if (!draft) return <div className="p-8 text-center sme-label">LOADING...</div>;
+
+  const deck = <MiniDeck selection={draft.selection} onInfo={setDetail} title="あなたのデッキ" />;
+  const modal = detail && <CardModal card={detail} onClose={() => setDetail(null)} />;
+
+  /* ---- ピック完了 ---- */
+  if (draft.phase !== "pick" || draft.slotIndex >= SLOTS.length) {
+    return (
+      <div>
+        <div className="sme-panel p-4 text-center mb-2">
+          <div className="sme-heading text-xl mb-1">デッキ完成！</div>
+          <p className="text-xs text-slate-300">
+            {locked ? "相手のピック完了を待っています" : "下の「準備完了」を押してください"}
+          </p>
+        </div>
+        {deck}
+        {modal}
+      </div>
+    );
+  }
+
+  /* ---- ピック中 ---- */
+  const slot = SLOTS[draft.slotIndex];
+  const offer = (draft.offers[slot] || []).map(getCard).filter(Boolean);
+  const decide = () => {
+    if (!chosen || locked) return;
+    const next = pickCard(draft, chosen);
+    saveRoomDraft(draftKey, next);
+    setDraftState(next);
+    setChosen(null);
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="cost-gem"><span>{slot.replace(/[ab]/, "")}</span></span>
+          <span className="sme-label">COST {slot}</span>
+        </div>
+        <span className="text-xs text-slate-400">
+          {draft.slotIndex + 1} / {SLOTS.length} 枚目
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-slate-800 mb-4 overflow-hidden">
+        <div
+          className="h-full bg-amber-400 transition-all"
+          style={{ width: `${(draft.slotIndex / SLOTS.length) * 100}%` }}
+        />
+      </div>
+
+      <div className="flex flex-col gap-3" key={slot}>
+        {offer.map((c, i) => (
+          <button
+            key={c.id}
+            onClick={() => setChosen(c.id)}
+            className={`pick-card sp-offer ${fxClass(c.faction)} ${chosen === c.id ? "is-on" : ""}`}
+            style={{ animationDelay: `${i * 0.08}s` }}
+          >
+            <div className="flex justify-between items-baseline">
+              <span className="text-[11px] fx-text font-bold">
+                {FACTION_LABEL[c.faction]} / {typeLabel(c)}
+              </span>
+              {c.stat && <span className="text-[11px] text-slate-300">STAT {c.stat}</span>}
+            </div>
+            <div className="text-base font-bold my-1">{c.name}</div>
+            <div className="text-[12px] text-slate-300 leading-relaxed"><RichText text={c.text} /></div>
+          </button>
+        ))}
+      </div>
+
+      <button
+        disabled={!chosen}
+        onClick={decide}
+        className={`sme-btn sme-btn-sun mt-4 ${chosen ? "sme-glow" : "opacity-50"}`}
+      >
+        このカードにする
+      </button>
+
+      <MiniDeck selection={draft.selection} onInfo={setDetail} title="これまでに選んだカード" />
+      {modal}
+    </div>
+  );
+}

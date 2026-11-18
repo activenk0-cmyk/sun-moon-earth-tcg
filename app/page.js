@@ -21,14 +21,14 @@ import TutorialButton from "./TutorialButton";
 import RankBadge from "./RankBadge";
 import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
 import MyPageButton from "./MyPageButton";
-import StarPick, { finishStarpickBattle, markStarpickBattle } from "./StarPickPage";
+import StarPick, { finishStarpickBattle, markStarpickBattle, RoomStarPick } from "./StarPickPage";
 import { opponentDeck, battleLabel } from "../lib/starpick";
 import { fxClass } from "./GameParts";
 import {
   currentUid, setCurrentUid,
   loadStreaks, saveStreaksLocal, pushStreaks, mergeStreaks, isEmptyRank, recordStreak,
   PLAYER_ID_RE, PIN_RE, fetchUsedIds, firstFreeId, claimPlayerId, idToEmail, pinToPassword, authErrorText,
-  gameKey, newLobby, lobbyDoc, gameDoc,
+  gameKey, newLobby, lobbyDoc, gameDoc, roomMode,
   stampLog, pickNewer,
 } from "../lib/online";
 import { CPU_ID, YOU_ID, CpuGame, DetailModal, GameScreen } from "./GameScreen";
@@ -682,7 +682,7 @@ export default function Home() {
   }
 
   /* ---- 部屋を作る ---- */
-  async function createRoom() {
+  async function createRoom(mode = "normal") {
     if (lobbyBusy || !myId) return;
     setLobbyBusy(true);
     setMsg("");
@@ -697,7 +697,7 @@ export default function Home() {
             const d = snap.data();
             if (!d.closed && d.host) return false; // 使用中のIDなら作り直す
           }
-          tx.set(ref, newLobby(myId));
+          tx.set(ref, newLobby(myId, mode));
           return true;
         });
         if (ok) id = cand;
@@ -1153,9 +1153,15 @@ export default function Home() {
       <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
         <h2 className="sme-heading text-2xl mb-6 text-center">ルームマッチ</h2>
         <div className="sme-panel p-5 flex flex-col gap-3">
-          <button disabled={lobbyBusy} onClick={createRoom} className="sme-btn sme-btn-sun sme-glow">
+          <button disabled={lobbyBusy} onClick={() => createRoom("normal")} className="sme-btn sme-btn-sun sme-glow">
             {lobbyBusy ? "作成中…" : "部屋を作る"}
           </button>
+          <button disabled={lobbyBusy} onClick={() => createRoom("starpick")} className="sme-btn sme-btn-earth">
+            {lobbyBusy ? "作成中…" : "スターピック対戦の部屋を作る"}
+          </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            スターピック対戦：2人とも各枠3枚から1枚ずつピックしたデッキで対戦します
+          </p>
           <button
             disabled={lobbyBusy}
             onClick={() => { setMsg(""); setJoinInput(""); setScreen("join"); }}
@@ -1208,6 +1214,7 @@ export default function Home() {
   /* ============ 画面: デッキ選択 ============ */
   if (screen === "deck") {
     const isRoom = matchMode === "room";
+    const isRoomPick = isRoom && !!lobby && roomMode(lobby) === "starpick";
     let oppStatus = "未入室（IDを伝えてください）";
     if (oppIdL) {
       if (lobby && lobby.phase === "end") oppStatus = "結果画面を見ています";
@@ -1225,7 +1232,7 @@ export default function Home() {
     return (
       <main className={`min-h-screen p-4 max-w-lg mx-auto ${isRoom ? "pb-72" : "pb-48"}`}>
         <div className="flex items-center justify-between mb-1">
-          <h2 className="sme-heading text-2xl">デッキ選択</h2>
+          <h2 className="sme-heading text-2xl">{isRoomPick ? "スターピック" : "デッキ選択"}</h2>
           {isRoom ? (
             <button onClick={leaveOnline} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
               退室する
@@ -1240,7 +1247,9 @@ export default function Home() {
           )}
         </div>
         <p className="text-xs text-slate-400 mb-4">
-          {isRoom ? "ルームマッチ" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）
+          {isRoomPick
+            ? "ルームマッチ（スターピック対戦）｜各枠3枚から1枚をピックしてデッキを作ります"
+            : `${isRoom ? "ルームマッチ" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）`}
         </p>
         {!isRoom && user && (
           <div className="mb-4">
@@ -1253,6 +1262,14 @@ export default function Home() {
           </div>
         )}
 
+        {isRoomPick ? (
+          <RoomStarPick
+            draftKey={`${room}:${lobby.gameNo || 0}:${myId}`}
+            locked={locked}
+            onSelection={setSelection}
+          />
+        ) : (
+        <>
         {/* おすすめデッキ */}
         <div className="mb-6">
           <div className="sme-label mb-2">RECOMMENDED DECKS</div>
@@ -1391,6 +1408,8 @@ export default function Home() {
             </div>
           </div>
         ))}
+        </>
+        )}
 
         <div className="fixed bottom-0 left-0 right-0 z-20 p-4 sme-panel !rounded-none !border-x-0 !border-b-0">
           <div className="max-w-lg mx-auto">
