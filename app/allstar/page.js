@@ -14,6 +14,33 @@ import { CPU_DECKS } from "../../lib/cpu";
 import { DECKS } from "../../lib/decks";
 import { CPU_ID, YOU_ID, CpuGame } from "../GameScreen";
 
+// アビリティ枠・水星/土星の色（app/page.js の EXTRA_CSS と同じもの）
+// app/page.js を通らずにこのページを直接開くと読み込まれないため、ここでも入れる
+const EXTRA_CSS = `
+.fx-mercury { --fx: #4fd8f0; --fx-deep: #136c80; --fx-rgb: 79, 216, 240; }
+.fx-saturn { --fx: #b9b37d; --fx-deep: #6a6439; --fx-rgb: 185, 179, 125; }
+.ability-row { display: flex; gap: 4px; margin-top: 3px; }
+.ability-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 50%;
+  font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 6px;
+  background: rgba(var(--fx-rgb), 0.16); border: 1px solid rgba(var(--fx-rgb), 0.6); color: #e6fbff;
+}
+.ability-chip .ab-kind {
+  font-weight: 800; padding: 1px 4px; border-radius: 4px; background: var(--fx-deep); color: #fff; flex-shrink: 0;
+}
+.ability-chip .ab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ability-empty {
+  font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 6px;
+  border: 1px dashed rgba(255,255,255,0.18); color: rgba(255,255,255,0.3);
+}
+`;
+if (typeof document !== "undefined" && !document.getElementById("sme-extra-css")) {
+  const el = document.createElement("style");
+  el.id = "sme-extra-css";
+  el.textContent = EXTRA_CSS;
+  document.head.appendChild(el);
+}
+
 // デッキに入るカード（枠のあるカードすべて）
 const ALL_IDS = CARDS.filter((c) => c.slot).map((c) => c.id);
 
