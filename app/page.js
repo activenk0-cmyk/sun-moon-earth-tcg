@@ -1186,52 +1186,62 @@ export default function Home() {
     return (
       <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
         <h2 className="sme-heading text-2xl mb-6 text-center">CPU対戦</h2>
-        <div className="sme-panel p-5 flex flex-col gap-3">
-          <button
-            onClick={() => {
-              if (!user) return needLogin("クラシック（ランク戦）");
-              setRankMsg("");
-              setMatchMode("cpu");
-              setScreen("deck");
-            }}
-            className="sme-btn sme-btn-sun sme-glow"
-          >
-            クラシック（ランク戦）
-          </button>
-          <p className="text-[11px] text-slate-400 -mt-1 text-center">
-            各枠から1種類ずつ選んだ40枚デッキで対戦。ランクポイントが動きます
-          </p>
-          {user && (
-            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
-          )}
-          <button
-            onClick={() => {
-              if (!user) return needLogin("スターピック");
-              openStarpick();
-            }}
-            className="sme-btn sme-btn-earth"
-          >
-            スターピック
-          </button>
-          <p className="text-[11px] text-slate-400 -mt-1 text-center">
-            各枠3枚から1枚ずつピックしたデッキで、CPUと6連戦に挑みます
-          </p>
-          <button
-            disabled={rankBusy}
-            onClick={() => {
-              if (!user) return needLogin("オールスター（ランク戦）");
-              startCpu(true);
-            }}
-            className="sme-btn sme-btn-moon"
-          >
-            {rankBusy ? "ポイントを確認中…" : "オールスター（ランク戦）"}
-          </button>
-          <p className="text-[11px] text-slate-400 -mt-1 text-center">
-            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦。クラシックとは別のランクです
-          </p>
-          {user && (
-            <RankBadge points={rankDataAll ? rankDataAll.points : null} streak={rankDataAll ? rankDataAll.streak : 0} mini />
-          )}
+        <div className="sme-panel p-4 flex flex-col gap-4">
+          {/* モードごとに枠で囲む（ボタン・説明・ランクを1つのまとまりに） */}
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3 flex flex-col gap-2">
+            <button
+              onClick={() => {
+                if (!user) return needLogin("クラシック（ランク戦）");
+                setRankMsg("");
+                setMatchMode("cpu");
+                setScreen("deck");
+              }}
+              className="sme-btn sme-btn-sun sme-glow"
+            >
+              クラシック（ランク戦）
+            </button>
+            <p className="text-[11px] text-slate-400 text-center">
+              各枠から1種類ずつ選んだ40枚デッキで対戦
+            </p>
+            {user && (
+              <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+            )}
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3 flex flex-col gap-2">
+            <button
+              onClick={() => {
+                if (!user) return needLogin("スターピック");
+                openStarpick();
+              }}
+              className="sme-btn sme-btn-earth"
+            >
+              スターピック
+            </button>
+            <p className="text-[11px] text-slate-400 text-center">
+              各枠3枚から1枚ずつピックしたデッキで、CPUと6連戦に挑戦
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-black/25 p-3 flex flex-col gap-2">
+            <button
+              disabled={rankBusy}
+              onClick={() => {
+                if (!user) return needLogin("オールスター（ランク戦）");
+                startCpu(true);
+              }}
+              className="sme-btn sme-btn-moon"
+            >
+              {rankBusy ? "ポイントを確認中…" : "オールスター（ランク戦）"}
+            </button>
+            <p className="text-[11px] text-slate-400 text-center">
+              全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦（クラシックとは別のランク）
+            </p>
+            {user && (
+              <RankBadge points={rankDataAll ? rankDataAll.points : null} streak={rankDataAll ? rankDataAll.streak : 0} mini />
+            )}
+          </div>
+
           {rankMsg && <div className="text-rose-300 text-xs text-center">{rankMsg}</div>}
           <button
             onClick={() => { setRankMsg(""); setMatchMode(null); setScreen("menu"); }}
