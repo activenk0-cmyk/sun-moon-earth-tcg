@@ -553,7 +553,9 @@ export default function Home() {
     }
   }, [screen, state, matchMode, myId, resultState]);
 
-  const deckComplete = SLOTS.every((s) => selection[s]);
+  // オールスター対戦の部屋はデッキ選択なし（全カード1枚ずつで戦う）
+  const isAllStarRoom = matchMode === "room" && !!state && roomMode(state) === "allstar";
+  const deckComplete = isAllStarRoom || SLOTS.every((s) => selection[s]);
   const matchedPreset = PRESETS.find((d) => SLOTS.every((s) => d.selection[s] === selection[s]));
   const matchedMyDeck = myDecks.find((d) => d.selection && SLOTS.every((s) => d.selection[s] === selection[s]));
 
@@ -776,7 +778,8 @@ export default function Home() {
         const lobbyIn = { ...(base.lobbyIn || {}), [myId]: true };
         const h = base.host;
         const g = base.guest;
-        if (next && h && g && ready[h] && ready[g] && isComplete(sels[h]) && isComplete(sels[g])) {
+        const decksOk = roomMode(base) === "allstar" || (isComplete(sels[h]) && isComplete(sels[g]));
+        if (next && h && g && ready[h] && ready[g] && decksOk) {
           tx.set(ref, gameDoc(base, sels));
         } else {
           tx.set(ref, { ...base, ready, sels, lobbyIn });
@@ -1162,6 +1165,12 @@ export default function Home() {
           <p className="text-[11px] text-slate-400 -mt-1 text-center">
             スターピック対戦：2人とも各枠3枚から1枚ずつピックしたデッキで対戦します
           </p>
+          <button disabled={lobbyBusy} onClick={() => createRoom("allstar")} className="sme-btn sme-btn-moon">
+            {lobbyBusy ? "作成中…" : "オールスター対戦の部屋を作る"}
+          </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            オールスター対戦：2人とも全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦します
+          </p>
           <button
             disabled={lobbyBusy}
             onClick={() => { setMsg(""); setJoinInput(""); setScreen("join"); }}
@@ -1219,7 +1228,7 @@ export default function Home() {
     if (oppIdL) {
       if (lobby && lobby.phase === "end") oppStatus = "結果画面を見ています";
       else if (oppReady) oppStatus = "準備完了";
-      else if (oppInLobby) oppStatus = "デッキ選択中";
+      else if (oppInLobby) oppStatus = isAllStarRoom ? "準備中" : "デッキ選択中";
       else oppStatus = "結果画面を見ています";
     }
     let hint = "";
@@ -1232,7 +1241,7 @@ export default function Home() {
     return (
       <main className={`min-h-screen p-4 max-w-lg mx-auto ${isRoom ? "pb-72" : "pb-48"}`}>
         <div className="flex items-center justify-between mb-1">
-          <h2 className="sme-heading text-2xl">{isRoomPick ? "スターピック" : "デッキ選択"}</h2>
+          <h2 className="sme-heading text-2xl">{isAllStarRoom ? "オールスター" : isRoomPick ? "スターピック" : "デッキ選択"}</h2>
           {isRoom ? (
             <button onClick={leaveOnline} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
               退室する
@@ -1247,7 +1256,9 @@ export default function Home() {
           )}
         </div>
         <p className="text-xs text-slate-400 mb-4">
-          {isRoomPick
+          {isAllStarRoom
+            ? "ルームマッチ（オールスター対戦）｜デッキ選択はありません"
+            : isRoomPick
             ? "ルームマッチ（スターピック対戦）｜各枠3枚から1枚をピックしてデッキを作ります"
             : `${isRoom ? "ルームマッチ" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）`}
         </p>
@@ -1256,13 +1267,19 @@ export default function Home() {
             <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} compact />
           </div>
         )}
-        {locked && (
+        {locked && !isAllStarRoom && (
           <div className="sme-panel p-2 mb-4 text-[11px] text-amber-200 text-center">
             準備完了中はデッキを変更できません（変更するときは「準備を取り消す」）
           </div>
         )}
 
-        {isRoomPick ? (
+        {isAllStarRoom ? (
+          <div className="sme-panel p-4 text-sm text-slate-200 leading-relaxed">
+            2人とも、全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚のデッキで対戦します。
+            <br />
+            相手が入室したら「準備完了」を押してください。
+          </div>
+        ) : isRoomPick ? (
           <RoomStarPick
             draftKey={`${room}:${lobby.gameNo || 0}:${myId}`}
             locked={locked}
@@ -1425,7 +1442,7 @@ export default function Home() {
             <div className="flex items-center justify-between mb-2">
               <span className="sme-label">DECK</span>
               <span className={`text-xs font-bold ${deckComplete ? "text-emerald-300" : "text-slate-400"}`}>
-                {Object.keys(selection).length} / 10 枠選択済み
+                {isAllStarRoom ? `全カード ${E.ALLSTAR_IDS.length}枚` : `${Object.keys(selection).length} / 10 枠選択済み`}
               </span>
             </div>
 
@@ -1435,7 +1452,7 @@ export default function Home() {
                   <div className="sme-panel px-2 py-1.5">
                     <span className="text-slate-400">あなた：</span>
                     <span className={myReady ? "text-emerald-300 font-bold" : "text-slate-200"}>
-                      {myReady ? "準備完了" : "デッキ選択中"}
+                      {myReady ? "準備完了" : isAllStarRoom ? "準備中" : "デッキ選択中"}
                     </span>
                   </div>
                   <div className="sme-panel px-2 py-1.5">

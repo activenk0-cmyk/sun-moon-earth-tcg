@@ -8,7 +8,6 @@
 // ============================================================
 
 import { useState, useEffect } from "react";
-import { CARDS } from "../../lib/cards";
 import * as E from "../../lib/engine";
 import { CPU_DECKS } from "../../lib/cpu";
 import { DECKS } from "../../lib/decks";
@@ -41,19 +40,13 @@ if (typeof document !== "undefined" && !document.getElementById("sme-extra-css")
   document.head.appendChild(el);
 }
 
-// デッキに入るカード（枠のあるカードすべて）
-const ALL_IDS = CARDS.filter((c) => c.slot).map((c) => c.id);
+const ALL_IDS = E.ALLSTAR_IDS; // デッキに入るカード（枠のあるカードすべて）
 
 const CPU_DECK = {
   name: `オールスター（全${ALL_IDS.length}枚）`,
   tier: "-",
   style: "balanced",
 };
-
-// 全カード1枚ずつの山札
-function allDeck() {
-  return E.shuffle(ALL_IDS.map((id) => ({ uid: E.uid(), cardId: id, costMod: 0 })));
-}
 
 // 新しい試合を作る
 function newGame() {
@@ -70,7 +63,7 @@ function newGame() {
   // 山札を全カード1枚ずつに入れ替えて、初期手札を配り直す
   [YOU_ID, CPU_ID].forEach((pid) => {
     const p = s.players[pid];
-    p.deck = allDeck();
+    p.deck = E.buildAllStarDeck();
     E.dealInitialHand(p);
     p.selection = null; // 10枠のデッキではないので、マイページの記録には入れない
   });
