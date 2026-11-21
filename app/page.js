@@ -909,8 +909,9 @@ export default function Home() {
   }
 
   /* ---- CPU戦開始 ---- */
-  async function startCpu() {
-    if (!deckComplete || rankBusy) return;
+  // allstar: true ならオールスター（全カード1枚ずつの山札。デッキ選択なし）
+  async function startCpu(allstar = false) {
+    if ((!allstar && !deckComplete) || rankBusy) return;
     if (!user) {
       setRankMsg("CPU戦（ランク戦）はログインが必要です。タイトル画面からログインしてください");
       return;
@@ -929,19 +930,35 @@ export default function Home() {
     }
     setRankBusy(false);
     const base = DECKS.length ? pickDeck() : pickCpuDeck();
-    const d = { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
+    const d = allstar
+      ? { name: `オールスター（全${E.ALLSTAR_IDS.length}枚）`, tier: "-", style: "balanced", allstar: true }
+      : { ...base, style: base.styles ? resolveStyle(base.styles) : base.style };
+    const game = E.createLocalGame({
+      p1: YOU_ID,
+      p2: CPU_ID,
+      sel1: allstar ? base.selection : selection,
+      sel2: base.selection,
+      first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
+      log: [
+        allstar
+          ? `オールスター戦：全カード1枚ずつ・${E.ALLSTAR_IDS.length}枚デッキ`
+          : `CPUのデッキ: ${d.name}（Tier${d.tier}）`,
+      ],
+    });
+    if (allstar) {
+      // 山札を全カード1枚ずつに入れ替えて、初期手札を配り直す
+      [YOU_ID, CPU_ID].forEach((pid) => {
+        const p = game.players[pid];
+        p.deck = E.buildAllStarDeck();
+        E.dealInitialHand(p);
+        p.selection = null; // 10枠のデッキではないので、マイページのカード記録には入れない
+      });
+    }
     setRankView(null);
     settlingRef.current = null;
     setCpuDeck(d);
     setCpuState({
-      ...E.createLocalGame({
-        p1: YOU_ID,
-        p2: CPU_ID,
-        sel1: selection,
-        sel2: d.selection,
-        first: Math.random() < 0.5 ? YOU_ID : CPU_ID,
-        log: [`CPUのデッキ: ${d.name}（Tier${d.tier}）`],
-      }),
+      ...game,
       gameId, // 連勝記録・ランク戦用の試合ID
       ranked: true,
       rankUid: user.uid,
@@ -998,6 +1015,7 @@ export default function Home() {
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
           CPU対戦とルームマッチ（友達と対戦）が遊べます。
           どちらも「クラシック」「スターピック」「オールスター」の3つのモードから選べます。
+          CPU対戦のクラシックとオールスターはランク戦です。
         </div>
 
         <div className="sme-panel mt-4 p-4 text-[11px] text-slate-300 w-full max-w-xs text-left">
@@ -1177,13 +1195,17 @@ export default function Home() {
             各枠3枚から1枚ずつピックしたデッキで、CPUと6連戦に挑みます
           </p>
           <button
-            onClick={() => { window.location.href = "/allstar"; }}
+            disabled={rankBusy}
+            onClick={() => {
+              if (!user) return needLogin("オールスター（ランク戦）");
+              startCpu(true);
+            }}
             className="sme-btn sme-btn-moon"
           >
-            オールスター
+            {rankBusy ? "ポイントを確認中…" : "オールスター（ランク戦）"}
           </button>
           <p className="text-[11px] text-slate-400 -mt-1 text-center">
-            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦（ランク戦ではありません）
+            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦。ランクポイントが動きます
           </p>
           {rankMsg && <div className="text-rose-300 text-xs text-center">{rankMsg}</div>}
           <button
@@ -1540,7 +1562,7 @@ export default function Home() {
                 )}
                 <button
                   disabled={!deckComplete || rankBusy || !user}
-                  onClick={startCpu}
+                  onClick={() => startCpu()}
                   className={`sme-btn sme-btn-earth ${deckComplete && user ? "sme-glow" : ""}`}
                 >
                   {rankBusy ? "ポイントを確認中…" : "準備完了（対戦開始）"}
@@ -1579,7 +1601,11 @@ export default function Home() {
         cpuDeck={cpuDeck}
         detail={detail}
         setDetail={setDetail}
-        onRematch={cpuDeck && cpuDeck.starpick ? () => leaveGame("starpick") : rematchCpu}
+        onRematch={
+          cpuDeck && cpuDeck.starpick ? () => leaveGame("starpick")
+          : cpuDeck && cpuDeck.allstar ? () => startCpu(true)
+          : rematchCpu
+        }
         onTitle={() => leaveGame("menu")}
         onRetire={retire}
         rankView={rankView}
