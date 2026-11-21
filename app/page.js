@@ -39,7 +39,7 @@ const SAVE_KEY = "sme-save-v1"; // ブラウザ保存用のキー
 const POLL_MS = 4000; // オンライン対戦で最新状態を取りに行く間隔
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 紛らわしい文字（O/0/I/1）を除く
 const MAX_MY_DECKS = 20; // 保存できるデッキの数
-const SCREENS = ["menu", "roomMenu", "join", "deck", "cpu", "game", "starpick"];
+const SCREENS = ["menu", "cpuMenu", "roomMenu", "join", "deck", "cpu", "game", "starpick"];
 
 /* ============ 追加の見た目（水星の陣営カラー・アビリティ枠） ============ */
 const EXTRA_CSS = `
@@ -970,16 +970,7 @@ export default function Home() {
 
         <div className="w-full max-w-xs flex flex-col gap-3">
           <button
-            onClick={() => {
-              setMsg("");
-              if (!user) {
-                setRankMsg("CPU戦（ランク戦）はログインが必要です。下の「ログイン」または「新規登録」からどうぞ");
-                return;
-              }
-              setRankMsg("");
-              setMatchMode("cpu");
-              setScreen("deck");
-            }}
+            onClick={() => { setMsg(""); setRankMsg(""); setScreen("cpuMenu"); }}
             className="sme-btn sme-btn-earth sme-glow text-lg"
           >
             CPU対戦
@@ -988,13 +979,10 @@ export default function Home() {
             <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
           )}
           <button
-            onClick={() => { setMsg(""); setScreen("roomMenu"); }}
+            onClick={() => { setMsg(""); setRankMsg(""); setScreen("roomMenu"); }}
             className="sme-btn sme-btn-sun sme-glow text-lg"
           >
             ルームマッチ
-          </button>
-          <button onClick={openStarpick} className="sme-btn sme-btn-moon sme-glow text-lg">
-            スターピック
           </button>
                         {user && (
             <MyPageButton
@@ -1008,8 +996,8 @@ export default function Home() {
         </div>
 
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
-          10のコスト枠から各1種を選び、4枚ずつ計40枚のデッキを作ります。
-          友達とのルームマッチと、CPU対戦が遊べます。
+          CPU対戦とルームマッチ（友達と対戦）が遊べます。
+          どちらも「クラシック」「スターピック」「オールスター」の3つのモードから選べます。
         </div>
 
         <div className="sme-panel mt-4 p-4 text-[11px] text-slate-300 w-full max-w-xs text-left">
@@ -1146,6 +1134,65 @@ export default function Home() {
           {authMsg && <div className="mt-2 text-amber-200">{authMsg}</div>}
         </div>
             <TutorialButton />
+      </main>
+    );
+  }
+
+  /* ============ 画面: CPU対戦（モード選択） ============ */
+  if (screen === "cpuMenu") {
+    const needLogin = (name) => {
+      setRankMsg(`${name}はログインが必要です。タイトル画面からログインしてください`);
+    };
+    return (
+      <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
+        <h2 className="sme-heading text-2xl mb-6 text-center">CPU対戦</h2>
+        <div className="sme-panel p-5 flex flex-col gap-3">
+          {user && (
+            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+          )}
+          <button
+            onClick={() => {
+              if (!user) return needLogin("クラシック（ランク戦）");
+              setRankMsg("");
+              setMatchMode("cpu");
+              setScreen("deck");
+            }}
+            className="sme-btn sme-btn-sun sme-glow"
+          >
+            クラシック（ランク戦）
+          </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            各枠から1種類ずつ選んだ40枚デッキで対戦。ランクポイントが動きます
+          </p>
+          <button
+            onClick={() => {
+              if (!user) return needLogin("スターピック");
+              openStarpick();
+            }}
+            className="sme-btn sme-btn-earth"
+          >
+            スターピック
+          </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            各枠3枚から1枚ずつピックしたデッキで、CPUと6連戦に挑みます
+          </p>
+          <button
+            onClick={() => { window.location.href = "/allstar"; }}
+            className="sme-btn sme-btn-moon"
+          >
+            オールスター
+          </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦（ランク戦ではありません）
+          </p>
+          {rankMsg && <div className="text-rose-300 text-xs text-center">{rankMsg}</div>}
+          <button
+            onClick={() => { setRankMsg(""); setMatchMode(null); setScreen("menu"); }}
+            className="sme-btn sme-btn-ghost"
+          >
+            戻る
+          </button>
+        </div>
       </main>
     );
   }
