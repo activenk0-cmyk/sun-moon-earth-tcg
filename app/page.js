@@ -1157,8 +1157,11 @@ export default function Home() {
         <h2 className="sme-heading text-2xl mb-6 text-center">ルームマッチ</h2>
         <div className="sme-panel p-5 flex flex-col gap-3">
           <button disabled={lobbyBusy} onClick={() => createRoom("normal")} className="sme-btn sme-btn-sun sme-glow">
-            {lobbyBusy ? "作成中…" : "部屋を作る"}
+            {lobbyBusy ? "作成中…" : "クラシック対戦の部屋を作る"}
           </button>
+          <p className="text-[11px] text-slate-400 -mt-1 text-center">
+            クラシック対戦：各枠から1種類ずつ選んだ40枚デッキで対戦します
+          </p>
           <button disabled={lobbyBusy} onClick={() => createRoom("starpick")} className="sme-btn sme-btn-earth">
             {lobbyBusy ? "作成中…" : "スターピック対戦の部屋を作る"}
           </button>
@@ -1241,7 +1244,7 @@ export default function Home() {
     return (
       <main className={`min-h-screen p-4 max-w-lg mx-auto ${isRoom ? "pb-72" : "pb-48"}`}>
         <div className="flex items-center justify-between mb-1">
-          <h2 className="sme-heading text-2xl">{isAllStarRoom ? "オールスター" : isRoomPick ? "スターピック" : "デッキ選択"}</h2>
+          <h2 className="sme-heading text-2xl">{isAllStarRoom ? "オールスター" : isRoomPick ? "スターピック" : isRoom ? "クラシック" : "デッキ選択"}</h2>
           {isRoom ? (
             <button onClick={leaveOnline} className="sme-btn sme-btn-ghost sme-btn-sm !w-auto">
               退室する
@@ -1260,7 +1263,7 @@ export default function Home() {
             ? "ルームマッチ（オールスター対戦）｜デッキ選択はありません"
             : isRoomPick
             ? "ルームマッチ（スターピック対戦）｜各枠3枚から1枚をピックしてデッキを作ります"
-            : `${isRoom ? "ルームマッチ" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）`}
+            : `${isRoom ? "ルームマッチ（クラシック対戦）" : "CPU対戦（ランク戦）"}｜各枠から1種類ずつ選択（「詳細」で効果を確認）`}
         </p>
         {!isRoom && user && (
           <div className="mb-4">
