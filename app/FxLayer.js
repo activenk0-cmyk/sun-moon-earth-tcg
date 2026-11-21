@@ -206,7 +206,7 @@ export function useFxPlayer(state, myId, speed) {
           const loserHp = `hp-${loser === myId ? "me" : "opp"}`;
           const fresh = F.overlaysOf(step, myId)
             .map((o) => ({
-              ...o, key: E.uid(), at: now, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null,
+              ...o, key: E.uid(), at: now, mul, rect: rectOf(o.target), fromRect: o.from ? rectOf(o.from) : null,
               big: lethalNow && o.type === "pop" && o.target === loserHp, // 決着のダメージ数字は大きく叩きつける
             }))
             .filter((o) => o.rect);
@@ -379,16 +379,19 @@ export default function FxLayer({ fx, oppLabel }) {
       {overlays.map((o) => {
         const r = o.rect;
         const cx = r.x + r.w / 2;
+        // 速さの倍率は、出した瞬間の値で固定する
+        // （全体の --fx-mul が後から変わると、終わったアニメーションの長さが伸びて、もう一度再生されたように見えるため）
+        const pin = o.mul != null ? { "--fx-mul": String(o.mul) } : {};
         if (o.type === "pop") {
           return (
-            <div key={o.key} className={`fxo-pop ${o.tone || "bad"} ${o.big ? "big" : ""}`} style={{ left: cx, top: r.y + r.h * 0.35 }}>
+            <div key={o.key} className={`fxo-pop ${o.tone || "bad"} ${o.big ? "big" : ""}`} style={{ left: cx, top: r.y + r.h * 0.35, ...pin }}>
               {o.text}
             </div>
           );
         }
         if (o.type === "chip") {
           return (
-            <div key={o.key} className={`fxo-chip ${o.tone || ""}`} style={{ left: cx, top: r.y - 2 }}>
+            <div key={o.key} className={`fxo-chip ${o.tone || ""}`} style={{ left: cx, top: r.y - 2, ...pin }}>
               {o.text}
             </div>
           );
@@ -398,7 +401,7 @@ export default function FxLayer({ fx, oppLabel }) {
             <div
               key={o.key}
               className={`fxo-ring ${o.tone || "bad"}`}
-              style={{ left: r.x - 3, top: r.y - 3, width: r.w + 6, height: r.h + 6 }}
+              style={{ left: r.x - 3, top: r.y - 3, width: r.w + 6, height: r.h + 6, ...pin }}
             />
           );
         }
@@ -413,7 +416,7 @@ export default function FxLayer({ fx, oppLabel }) {
             <div
               key={`${o.key}-${i}`}
               className="fxo-draw"
-              style={{ left: x - i * 10, top: y, "--dx": `${dx}px`, "--dy": `${dy}px`, animationDelay: `${i * 90}ms` }}
+              style={{ left: x - i * 10, top: y, "--dx": `${dx}px`, "--dy": `${dy}px`, animationDelay: `${i * 90}ms`, ...pin }}
             />
           ));
         }
@@ -427,7 +430,7 @@ export default function FxLayer({ fx, oppLabel }) {
             <div
               key={o.key}
               className={`fxo-sac ${fxClass(c?.faction)}`}
-              style={{ left: sx, top: sy, "--dx": `${cx - (sx + 17)}px`, "--dy": `${r.y + r.h / 2 - (sy + 23)}px` }}
+              style={{ left: sx, top: sy, "--dx": `${cx - (sx + 17)}px`, "--dy": `${r.y + r.h / 2 - (sy + 23)}px`, ...pin }}
             >
               <span>{(o.nm || c?.name || "").slice(0, 6)}</span>
             </div>
