@@ -22,7 +22,7 @@ import { ghostNote, flushGhost } from "../lib/ghostLog";
 import {
   PHASE_LABEL, fxClass, cardStatus, StatusLines, AbilityRow, PhaseBar, ManaBar, EmptySlots, UnitCard,
 } from "./GameParts";
-import { currentUid, recordStreak, gameKey, stampLog } from "../lib/online";
+import { currentUid, recordStreak, gameKey, stampLog, roomMode } from "../lib/online";
 import FxLayer, { useFxPlayer } from "./FxLayer";
 import RichText from "./RichText";
 import { FX_SPEEDS, loadFxSpeed, saveFxSpeed, logGroupAt, fxToChanges } from "../lib/fx";
@@ -193,8 +193,13 @@ export function GameScreen({
     // ゴースト用の癖の記録（画面には出さない）
     flushGhost(currentUid, endKey, state.starpick ? "starpick" : isCpu ? "cpu" : "room", state.winner === myId);
     if (state.starpick) return; // スターピックの記録は StarPickPage.js でする（連勝記録も別）
-    recordMatchStats(currentUid, endKey, isCpu ? "cpu" : "room", mySel, state.winner === myId);
+    // CPU戦はクラシック／オールスターで分けて記録。練習用（/allstar）は記録しない
+    if (!(isCpu && cpuDeck && cpuDeck.practice)) {
+      const statMode = isCpu ? (cpuDeck && cpuDeck.allstar ? "allstar" : "cpu") : "room";
+      recordMatchStats(currentUid, endKey, statMode, mySel, state.winner === myId, isCpu ? null : roomMode(state));
+    }
     if (isCpu && state.ranked) return; // ランク戦の連勝はランクのデータで管理する
+    if (isCpu && cpuDeck && cpuDeck.practice) return; // 練習用は連勝記録も付けない
     setStreak(recordStreak(isCpu ? "cpu" : "room", endKey, state.winner === myId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endKey]);

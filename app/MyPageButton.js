@@ -5,6 +5,7 @@ import { doc, getDocFromServer } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { FACTION_LABEL, FACTION_COLOR } from "../lib/cards";
 import { summarizeStats } from "../lib/statsStore";
+import { getRank, fmt } from "../lib/rank";
 
 /* ============================================================
    マイページ（ボタンを押すと開く）
@@ -12,13 +13,14 @@ import { summarizeStats } from "../lib/statsStore";
      uid       … ログイン中のアカウントの内部ID
      nickname  … ニックネーム
      playerId  … プレイヤーID（a1 など）
-     rankData  … ランク戦のデータ（現在の連勝・最高連勝）
+     rankData  … クラシックのランク戦のデータ（ポイント・現在の連勝・最高連勝）
+     rankDataAll … オールスターのランク戦のデータ
      streaks   … ルームマッチなどの連勝記録
    ============================================================ */
 
 const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
-export default function MyPageButton({ uid, nickname, playerId, rankData, streaks }) {
+export default function MyPageButton({ uid, nickname, playerId, rankData, rankDataAll, streaks }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -41,9 +43,18 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
   }
 
   const s = stats;
-  const cpu = (s && s.modes && s.modes.cpu) || { g: 0, w: 0 };
-  const room = (s && s.modes && s.modes.room) || { g: 0, w: 0 };
-  const sp = (s && s.modes && s.modes.starpick) || { g: 0, w: 0 };
+  const modeOf = (k) => (s && s.modes && s.modes[k]) || { g: 0, w: 0 };
+  const cpu = modeOf("cpu");
+  const all = modeOf("allstar");
+  const room = modeOf("room");
+  const sp = modeOf("starpick");
+  const roomSubs = [
+    { label: "クラシック", v: modeOf("room_normal") },
+    { label: "スターピック", v: modeOf("room_starpick") },
+    { label: "オールスター", v: modeOf("room_allstar") },
+  ];
+  const roomSubTotal = roomSubs.reduce((a, x) => a + x.v.g, 0);
+  const rec = (v) => `${v.g}戦 ${v.w}勝（勝率 ${pct(v.w, v.g)}%）`;
   const spRec = (s && s.starpick) || { runs: 0, best: 0, clears: 0 };
   const totalSlots = s ? s.factions.reduce((sum, f) => sum + f.n, 0) : 0;
   const topFaction = s && s.factions.length > 0 ? s.factions[0] : null;
@@ -58,6 +69,8 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
 
   const rankBest = rankData ? rankData.best || 0 : 0;
   const rankCur = rankData ? rankData.streak || 0 : 0;
+  const allBest = rankDataAll ? rankDataAll.best || 0 : 0;
+  const allCur = rankDataAll ? rankDataAll.streak || 0 : 0;
   const cpuOldBest = (streaks && streaks.cpu && streaks.cpu.best) || 0;
   const roomCur = (streaks && streaks.room && streaks.room.cur) || 0;
   const roomBest = (streaks && streaks.room && streaks.room.best) || 0;
@@ -95,41 +108,65 @@ export default function MyPageButton({ uid, nickname, playerId, rankData, streak
 
             {!loading && !err && s && (
               <>
-                {/* ===== 戦績 ===== */}
-                <Section title="戦績">
+                {/* ===== 全体 ===== */}
+                <Section title="全体の戦績">
                   <div className="grid grid-cols-3 gap-2 text-center">
                     <Stat label="試合数" value={s.games} />
                     <Stat label="勝利数" value={s.wins} />
                     <Stat label="勝率" value={`${pct(s.wins, s.games)}%`} />
                   </div>
+                </Section>
+
+                {/* ===== CPU対戦 ===== */}
+                <Section title="CPU対戦">
+                  <div className="space-y-2">
+                    <ModeCard title="クラシック（ランク戦）">
+                      <RankLine data={rankData} />
+                      <Row left="戦績" right={rec(cpu)} />
+                      <Row left="連勝" right={`現在 ${rankCur}連勝 / 最高 ${Math.max(rankBest, cpuOldBest)}連勝`} />
+                    </ModeCard>
+                    <ModeCard title="スターピック">
+                      <Row left="戦績" right={rec(sp)} />
+                      <Row left="最高連勝" right={`${spRec.best}連勝`} />
+                      <Row left="完全制覇" right={`${spRec.clears}回（挑戦 ${spRec.runs}回）`} />
+                    </ModeCard>
+                    <ModeCard title="オールスター（ランク戦）">
+                      <RankLine data={rankDataAll} />
+                      <Row left="戦績" right={rec(all)} />
+                      <Row left="連勝" right={`現在 ${allCur}連勝 / 最高 ${allBest}連勝`} />
+                    </ModeCard>
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">
+                    スターピックの挑戦回数は、敗退または完全制覇で終わった回数です。
+                  </p>
+                </Section>
+
+                {/* ===== ルームマッチ ===== */}
+                <Section title="ルームマッチ">
+                  <ModeCard title="合計">
+                    <Row left="戦績" right={rec(room)} />
+                    <Row left="連勝" right={`現在 ${roomCur}連勝 / 最高 ${roomBest}連勝`} />
+                  </ModeCard>
                   <div className="mt-2 space-y-1 text-xs text-slate-300">
-                    <Row left="CPU戦" right={`${cpu.g}戦 ${cpu.w}勝（勝率 ${pct(cpu.w, cpu.g)}%）`} />
-                    <Row left="ルームマッチ" right={`${room.g}戦 ${room.w}勝（勝率 ${pct(room.w, room.g)}%）`} />
-                    <Row left="スターピック" right={`${sp.g}戦 ${sp.w}勝（勝率 ${pct(sp.w, sp.g)}%）`} />
+                    {roomSubs.map((x) => (
+                      <Row key={x.label} left={`└ ${x.label}`} right={rec(x.v)} />
+                    ))}
                   </div>
+                  {room.g > roomSubTotal && (
+                    <p className="mt-2 text-[10px] text-slate-500">
+                      モード別の内訳は 2026/11/21 以降の試合から記録しています。
+                    </p>
+                  )}
                 </Section>
 
-                {/* ===== スターピック ===== */}
-                <Section title="スターピック">
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <Stat label="最高連勝" value={`${spRec.best}連勝`} />
-                    <Stat label="完全制覇" value={`${spRec.clears}回`} />
-                    <Stat label="挑戦回数" value={`${spRec.runs}回`} />
-                  </div>
-                  <p className="mt-2 text-[10px] text-slate-500">挑戦回数は、敗退または完全制覇で終わった回数です。</p>
-                </Section>
+                <div className="mb-2 mt-6 sme-label">デッキの傾向</div>
+                <p className="mb-3 text-[10px] text-slate-500">
+                  クラシック・スターピックの試合から集計しています（オールスターは全員同じデッキなので入りません）。
+                </p>
 
-                {/* ===== 連勝記録 ===== */}
-                <Section title="連勝記録">
-                  <div className="space-y-1 text-xs text-slate-300">
-                    <Row left="CPU戦" right={`現在 ${rankCur}連勝 / 最高 ${Math.max(rankBest, cpuOldBest)}連勝`} />
-                    <Row left="ルームマッチ" right={`現在 ${roomCur}連勝 / 最高 ${roomBest}連勝`} />
-                  </div>
-                </Section>
-
-                {s.games === 0 ? (
+                {s.cards.length === 0 ? (
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    まだ記録がありません。ログインした状態で対戦すると、よく使う陣営やカードがここに表示されます。
+                    まだ記録がありません。ログインした状態でクラシックやスターピックを遊ぶと、よく使う陣営やカードがここに表示されます。
                   </p>
                 ) : (
                   <>
@@ -202,6 +239,32 @@ function Section({ title, children }) {
       <div className="mb-2 text-xs font-bold text-amber-300">■ {title}</div>
       {children}
     </div>
+  );
+}
+
+function ModeCard({ title, children }) {
+  return (
+    <div className="rounded border border-slate-700 bg-slate-900/60 p-2">
+      <div className="mb-1 text-[11px] font-bold text-slate-100">{title}</div>
+      <div className="space-y-1 text-xs text-slate-300">{children}</div>
+    </div>
+  );
+}
+
+// ランクの1行表示（ランク名とポイント）
+function RankLine({ data }) {
+  if (!data) return <Row left="ランク" right="―" />;
+  const r = getRank(data.points);
+  return (
+    <Row
+      left="ランク"
+      right={
+        <span>
+          <span style={{ color: r.color }}>{r.icon} {r.name}</span>
+          <span className="ml-1 text-slate-400">{fmt(data.points)}pt</span>
+        </span>
+      }
+    />
   );
 }
 

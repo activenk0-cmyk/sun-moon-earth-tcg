@@ -1028,6 +1028,7 @@ export default function Home() {
               nickname={user.nickname}
               playerId={user.id}
               rankData={rankData}
+              rankDataAll={rankDataAll}
               streaks={streaks}
             />
           )}

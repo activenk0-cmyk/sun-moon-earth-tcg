@@ -46,6 +46,7 @@ const CPU_DECK = {
   name: `オールスター（全${ALL_IDS.length}枚）`,
   tier: "-",
   style: "balanced",
+  practice: true, // 練習用：ランクにもマイページの記録にも入れない
 };
 
 // 新しい試合を作る
