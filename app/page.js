@@ -19,7 +19,7 @@ import { DECKS, pickDeck } from "../lib/decks";
 import NewsButton from "./NewsButton";
 import TutorialButton from "./TutorialButton";
 import RankBadge from "./RankBadge";
-import { loadRank, beginRankedMatch, finishRankedMatch, flushUnsentRank } from "../lib/rankStore";
+import { loadAllRanks, beginRankedMatch, finishRankedMatch, flushUnsentRank, rankKindOf } from "../lib/rankStore";
 import MyPageButton from "./MyPageButton";
 import StarPick, { finishStarpickBattle, markStarpickBattle, RoomStarPick } from "./StarPickPage";
 import { opponentDeck, battleLabel } from "../lib/starpick";
@@ -132,7 +132,14 @@ export default function Home() {
   const [cpuState, setCpuState] = useState(null);
   const [cpuDeck, setCpuDeck] = useState(null);
   // ランク戦（CPU戦）
-  const [rankData, setRankData] = useState(null); // { points, streak, ... }（未ログインなら null）
+  const [rankData, setRankData] = useState(null); // クラシックのランク { points, streak, ... }（未ログインなら null）
+  const [rankDataAll, setRankDataAll] = useState(null); // オールスターのランク（クラシックとは別のポイント）
+  // 試合IDに合わせて、どちらかのランクを更新する
+  const setRankFor = (gameId, data) => {
+    if (!data) return;
+    if (rankKindOf(gameId) === "allstar") setRankDataAll(data);
+    else setRankData(data);
+  };
   const [rankBusy, setRankBusy] = useState(false);
   const [rankMsg, setRankMsg] = useState("");
   const [rankView, setRankView] = useState(null); // リザルト表示用 { gameId, win, result, error }
@@ -214,6 +221,7 @@ export default function Home() {
         setMyDecks([]);
         setStreaks(loadStreaks(null));
         setRankData(null);
+        setRankDataAll(null);
         return;
       }
       setCurrentUid(u.uid);
@@ -222,13 +230,17 @@ export default function Home() {
       setUser((prev) => ({ uid: u.uid, id, nickname: prev && prev.uid === u.uid ? prev.nickname : "" }));
       setStreaks(loadStreaks(u.uid));
       setRankData(null);
+      setRankDataAll(null);
       // ランクの読み込み（送れていなかった決着があれば先に再送）
+      const applyRanks = (r) => {
+        if (currentUid !== u.uid || !r) return;
+        setRankData(r.classic);
+        setRankDataAll(r.allstar);
+      };
       flushUnsentRank(u.uid)
-        .then((r) => { if (currentUid === u.uid && r) setRankData(r); })
+        .then(applyRanks)
         .catch(() => {
-          loadRank(u.uid)
-            .then((r) => { if (currentUid === u.uid) setRankData(r); })
-            .catch(() => {});
+          loadAllRanks(u.uid).then(applyRanks).catch(() => {});
         });
       try {
         const snap = await getDocFromServer(doc(db, "players", u.uid));
@@ -258,16 +270,18 @@ export default function Home() {
     const prev = prevScreenRef.current;
     prevScreenRef.current = screen;
     if (screen === "menu") setStreaks(loadStreaks());
-    if ((screen === "menu" || screen === "deck") && currentUid) {
+    if ((screen === "menu" || screen === "cpuMenu" || screen === "deck") && currentUid) {
       // スターピックから戻った時はランクが変わらないので、読み直さない
       // （試合記録の保存と重なって、一瞬レギュラー表示になるのを防ぐ）
       if (prev === "starpick" && rankData) return;
       const uid = currentUid;
-      loadRank(uid)
+      loadAllRanks(uid)
         .then((r) => {
           if (currentUid !== uid) return;
           // すでにランクを持っているのに「空のランク」が返ってきたら無視する
-          setRankData((cur) => (cur && isEmptyRank(r) && !isEmptyRank(cur) ? cur : r));
+          const keep = (cur, nx) => (cur && isEmptyRank(nx) && !isEmptyRank(cur) ? cur : nx);
+          setRankData((cur) => keep(cur, r.classic));
+          setRankDataAll((cur) => keep(cur, r.allstar));
         })
         .catch(() => {});
     }
@@ -290,7 +304,7 @@ export default function Home() {
     setRankView({ gameId: gid, win, result: null, error: null });
     finishRankedMatch(user.uid, gid, win)
       .then(({ data, result }) => {
-        if (data) setRankData(data);
+        if (data) setRankFor(gid, data);
         setRankView({
           gameId: gid,
           win,
@@ -637,8 +651,9 @@ export default function Home() {
       // ランク戦：開始時に負け分は引いてあるので、負けとして確定するだけ
       if (cpuState.ranked && cpuState.gameId && user && user.uid === cpuState.rankUid) {
         const uid = user.uid;
-        finishRankedMatch(uid, cpuState.gameId, false)
-          .then(({ data }) => { if (data && currentUid === uid) setRankData(data); })
+        const gid = cpuState.gameId;
+        finishRankedMatch(uid, gid, false)
+          .then(({ data }) => { if (data && currentUid === uid) setRankFor(gid, data); })
           .catch(() => {});
       }
     }
@@ -916,13 +931,14 @@ export default function Home() {
       setRankMsg("CPU戦（ランク戦）はログインが必要です。タイトル画面からログインしてください");
       return;
     }
-    const gameId = `cpu:${E.uid()}:${Date.now()}`;
+    // 試合IDの頭でランクの種類が決まる（"allstar:" ならオールスターのランク）
+    const gameId = `${allstar ? "allstar" : "cpu"}:${E.uid()}:${Date.now()}`;
     setRankBusy(true);
     setRankMsg("");
     try {
       // 対戦開始時に、負け分のポイントを先に引いて保存しておく
       const r = await beginRankedMatch(user.uid, gameId);
-      setRankData(r);
+      setRankFor(gameId, r);
     } catch (e) {
       setRankMsg(`通信に失敗したため対戦を開始できませんでした（${e?.code || e?.message || "不明なエラー"}）`);
       setRankBusy(false);
@@ -993,7 +1009,12 @@ export default function Home() {
             CPU対戦
           </button>
           {user && (
-            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+            <>
+              <div className="text-[10px] text-slate-400 text-left -mb-2">クラシック</div>
+              <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+              <div className="text-[10px] text-slate-400 text-left -mb-2">オールスター</div>
+              <RankBadge points={rankDataAll ? rankDataAll.points : null} streak={rankDataAll ? rankDataAll.streak : 0} mini />
+            </>
           )}
           <button
             onClick={() => { setMsg(""); setRankMsg(""); setScreen("roomMenu"); }}
@@ -1015,7 +1036,7 @@ export default function Home() {
         <div className="sme-panel mt-10 p-4 text-[11px] text-slate-300 leading-relaxed max-w-xs">
           CPU対戦とルームマッチ（友達と対戦）が遊べます。
           どちらも「クラシック」「スターピック」「オールスター」の3つのモードから選べます。
-          CPU対戦のクラシックとオールスターはランク戦です。
+          CPU対戦のクラシックとオールスターはランク戦です（ランクはそれぞれ別）。
         </div>
 
         <div className="sme-panel mt-4 p-4 text-[11px] text-slate-300 w-full max-w-xs text-left">
@@ -1165,9 +1186,6 @@ export default function Home() {
       <main className="min-h-screen p-6 max-w-lg mx-auto flex flex-col justify-center">
         <h2 className="sme-heading text-2xl mb-6 text-center">CPU対戦</h2>
         <div className="sme-panel p-5 flex flex-col gap-3">
-          {user && (
-            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
-          )}
           <button
             onClick={() => {
               if (!user) return needLogin("クラシック（ランク戦）");
@@ -1182,6 +1200,9 @@ export default function Home() {
           <p className="text-[11px] text-slate-400 -mt-1 text-center">
             各枠から1種類ずつ選んだ40枚デッキで対戦。ランクポイントが動きます
           </p>
+          {user && (
+            <RankBadge points={rankData ? rankData.points : null} streak={rankData ? rankData.streak : 0} mini />
+          )}
           <button
             onClick={() => {
               if (!user) return needLogin("スターピック");
@@ -1205,8 +1226,11 @@ export default function Home() {
             {rankBusy ? "ポイントを確認中…" : "オールスター（ランク戦）"}
           </button>
           <p className="text-[11px] text-slate-400 -mt-1 text-center">
-            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦。ランクポイントが動きます
+            全カードを1枚ずつ入れた{E.ALLSTAR_IDS.length}枚デッキで対戦。クラシックとは別のランクです
           </p>
+          {user && (
+            <RankBadge points={rankDataAll ? rankDataAll.points : null} streak={rankDataAll ? rankDataAll.streak : 0} mini />
+          )}
           {rankMsg && <div className="text-rose-300 text-xs text-center">{rankMsg}</div>}
           <button
             onClick={() => { setRankMsg(""); setMatchMode(null); setScreen("menu"); }}
